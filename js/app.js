@@ -5,7 +5,7 @@
   var C = window.UtargCore;
   var Store = window.UtargStore;
   var Sync = window.UtargSync;
-  var APP_VERSION = '1.2.0';
+  var APP_VERSION = '1.2.1';
 
   /* ---------- Narzędzia ---------- */
 

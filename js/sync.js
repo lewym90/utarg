@@ -256,18 +256,14 @@
 
   function scheduleRetry() {
     if (retryTimer) clearTimeout(retryTimer);
-    retryTimer = setTimeout(function () { if (Store.isDirty() || status.state === 'pending') run(); }, 60000);
+    retryTimer = setTimeout(function () { if (Store.isDirty() || status.state === 'pending') run(); }, 30000);
   }
 
   function run() {
     var cfg = loadConfig();
     if (!cfg) { setStatus({ state: 'off' }); return Promise.resolve(); }
     if (running) { again = true; return Promise.resolve(); }
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      setStatus({ state: 'pending', error: 'Brak połączenia. Kopia zostanie wysłana, gdy wróci internet.', code: 'offline' });
-      scheduleRetry();
-      return Promise.resolve();
-    }
+    // navigator.onLine bywa błędnie „false” (np. iPhone po wznowieniu aplikacji), więc zawsze próbujemy wysłać – błąd sieci i tak jest obsłużony niżej
     running = true;
     lastAttempt = Date.now();
     setStatus({ state: 'syncing', error: '', code: '' });
@@ -307,7 +303,6 @@
     var cfg = loadConfig();
     if (!cfg || !hooks) return Promise.resolve();
     if (running) return Promise.resolve();
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return Promise.resolve();
     if (Store.isDirty()) { requestRun(100); return Promise.resolve(); }
     running = true;
     lastAttempt = Date.now();
