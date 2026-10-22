@@ -298,6 +298,40 @@
     });
   }
 
+
+  /**
+   * Ciche sprawdzenie, czy na GitHubie są nowsze dane (wywoływane co minutę, gdy aplikacja jest otwarta).
+   * Nie zmienia paska stanu, dopóki nic się nie zmieni, więc nie miga i nie odświeża ekranu bez powodu.
+   */
+  function poll() {
+    var cfg = loadConfig();
+    if (!cfg || !hooks) return Promise.resolve();
+    if (running) return Promise.resolve();
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return Promise.resolve();
+    if (Store.isDirty()) { requestRun(100); return Promise.resolve(); }
+    running = true;
+    lastAttempt = Date.now();
+    var startVersion = hooks.getVersion();
+    return pullPush(cfg, hooks.getData(), 1).then(function (r) {
+      if (r.changedLocal) hooks.applyRemote(r.data);
+      var wasOk = status.state === 'synced';
+      if (r.changedLocal || r.pushed || !wasOk) {
+        cfg.lastSync = Date.now();
+        saveConfig(cfg);
+        if (hooks.getVersion() === startVersion) Store.setDirty(false);
+        setStatus({ state: Store.isDirty() ? 'pending' : 'synced', lastSync: cfg.lastSync, error: '', code: '' });
+      }
+    }).catch(function (e) {
+      var code = e && e.code ? e.code : 'other';
+      if (code === 'offline' || code === 'server' || code === 'rate') return; // chwilowe, bez alarmu
+      var msg = e && e.name === 'SyncError' ? e.message : 'Nie udało się sprawdzić kopii.';
+      if (status.state !== 'error' || status.code !== code) setStatus({ state: 'error', error: msg, code: code });
+    }).then(function () {
+      running = false;
+      if (again) { again = false; requestRun(300); }
+    });
+  }
+
   /** Łączy z repozytorium: sprawdza dostęp i robi pierwszą synchronizację. */
   function connect(owner, repo, token, opts) {
     opts = opts || {};
@@ -333,7 +367,7 @@
   }
 
   root.UtargSync = {
-    init: init, schedule: schedule, run: run, connect: connect, disconnect: disconnect,
+    init: init, schedule: schedule, run: run, poll: poll, connect: connect, disconnect: disconnect,
     getStatus: getStatus, getConfig: getConfigPublic, parseRepo: parseRepo,
     // udostępnione do testów
     _pullPush: pullPush, _toB64: toB64, _fromB64: fromB64

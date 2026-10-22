@@ -66,6 +66,7 @@ Do własnych testów można użyć jednego, publicznego repozytorium na kod i na
 Jak to działa:
 
 - Po każdym wpisie aplikacja scala dane z GitHub i z urządzenia (dla każdego dnia wygrywa nowszy wpis) i wysyła plik `utarg-dane.json`. Każda zmiana to osobny commit, więc w historii repozytorium można odzyskać dowolną wcześniejszą wersję.
+- Gdy aplikacja jest otwarta, co minutę sprawdza w tle, czy ktoś inny (np. drugie urządzenie) nie dopisał danych, i dołącza je bez żadnych kliknięć. Przy powrocie do aplikacji sprawdza też od razu.
 - Bez internetu wpisy zostają na urządzeniu, a kopia wysyłana jest automatycznie, gdy połączenie wróci. Stan widać w pasku „Kopia zapisana / czeka na wysłanie”.
 - Aplikacja **odmawia** połączenia z repozytorium publicznym.
 - Token jest przechowywany tylko na urządzeniu i wysyłany wyłącznie do `api.github.com`. Ma dostęp tylko do jednego repozytorium, więc w razie zgubienia telefonu wystarczy go unieważnić na GitHubie.

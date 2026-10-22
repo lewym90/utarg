@@ -207,3 +207,45 @@ test('osobna gałąź na dane: kopia trafia na wskazaną gałąź, brak gałęzi
   assert.equal(Sync.getConfig().branch, 'dane');
   Sync.disconnect();
 });
+
+test('odświeżanie w tle: pobiera cudze zmiany, a gdy nic się nie zmieniło, nie rusza paska stanu ani nie robi commitów', async () => {
+  const remote = C.setDay(C.emptyData(), '2026-10-20', 4200, false, 50);
+  const gh = fakeGithub({ file: { text: C.serialize(remote), sha: 'sha1' } });
+  let data = C.setDay(C.emptyData(), '2026-10-21', 100, false, 10);
+  const statuses = [];
+  let applied = 0;
+  Sync.init({
+    getData: () => data, getVersion: () => 1,
+    applyRemote: (d) => { data = C.merge(data, d); applied++; },
+    onStatus: (s) => statuses.push(s.state)
+  });
+  await Sync.connect('jan', 'sklep-dane', 'tok'); // pierwsze scalenie
+  assert.equal(C.countEntries(data), 2);
+  const putsAfterConnect = gh.puts;
+  statuses.length = 0;
+  applied = 0;
+  // nic nowego: cisza
+  await Sync.poll();
+  assert.equal(applied, 0);
+  assert.equal(gh.puts, putsAfterConnect);
+  assert.deepEqual(statuses, []);
+  // ktoś inny dopisał dzień na GitHubie
+  const other = C.setDay(C.parseSerialized(gh.file.text).data, '2026-10-22', 15050, false, 99999);
+  gh.file = { text: C.serialize(other), sha: 'sha-other' };
+  await Sync.poll();
+  assert.equal(applied, 1);
+  assert.equal(C.getDay(data, '2026-10-22').a, 15050);
+  assert.equal(gh.puts, putsAfterConnect); // tylko pobranie, bez zapisu
+  // chwilowy brak internetu w tle nie wywołuje alarmu
+  statuses.length = 0;
+  gh.offline = true;
+  await Sync.poll();
+  assert.deepEqual(statuses, []);
+  assert.equal(Sync.getStatus().state, 'synced');
+  gh.offline = false;
+  // błąd tokenu jest sygnalizowany
+  gh.status = 401;
+  await Sync.poll();
+  assert.equal(Sync.getStatus().state, 'error');
+  Sync.disconnect();
+});

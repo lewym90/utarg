@@ -5,7 +5,7 @@
   var C = window.UtargCore;
   var Store = window.UtargStore;
   var Sync = window.UtargSync;
-  var APP_VERSION = '1.0.0';
+  var APP_VERSION = '1.0.1';
 
   /* ---------- Narzędzia ---------- */
 
@@ -1201,6 +1201,10 @@
     Store.load().then(function (d) { clearTimeout(timeout); begin(d); }, function () { clearTimeout(timeout); begin(null); });
 
     setInterval(checkDayChange, 30000);
+    // co minutę (gdy aplikacja jest widoczna) sprawdź, czy ktoś inny nie dopisał danych
+    setInterval(function () {
+      if (document.visibilityState === 'visible') Sync.poll();
+    }, 60000);
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'visible') checkDayChange();
     });
