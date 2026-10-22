@@ -48,7 +48,15 @@
     });
   }
 
+  // zapisy do IndexedDB idą jeden po drugim, więc starszy zapis nigdy nie nadpisze nowszego
+  var idbQueue = Promise.resolve();
   function idbSet(key, value) {
+    var job = idbQueue.then(function () { return idbSetNow(key, value); });
+    idbQueue = job.then(null, function () { /* błąd jednego zapisu nie blokuje kolejnych */ });
+    return job;
+  }
+
+  function idbSetNow(key, value) {
     return openDb().then(function (db) {
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(DB_STORE, 'readwrite');

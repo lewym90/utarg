@@ -4,7 +4,7 @@
  * Zapytania do GitHuba (inna domena) nie są przechwytywane.
  * Przy wydawaniu nowej wersji zmień VERSION.
  */
-var VERSION = 'utarg-1.0.1';
+var VERSION = 'utarg-1.0.2';
 var ASSETS = [
   './',
   'index.html',
@@ -26,7 +26,15 @@ var NETWORK_TIMEOUT = 5000;
 
 self.addEventListener('install', function (event) {
   event.waitUntil(
-    caches.open(VERSION).then(function (cache) { return cache.addAll(ASSETS); }).then(function () {
+    caches.open(VERSION).then(function (cache) {
+      // cache:'reload' omija pamięć HTTP przeglądarki, żeby nie zapisać mieszanki starych i nowych plików
+      return Promise.all(ASSETS.map(function (u) {
+        return fetch(new Request(u, { cache: 'reload' })).then(function (res) {
+          if (!res.ok) throw new Error('Brak pliku ' + u);
+          return cache.put(u, res);
+        });
+      }));
+    }).then(function () {
       return self.skipWaiting();
     })
   );

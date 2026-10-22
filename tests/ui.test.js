@@ -418,3 +418,43 @@ test('repozytorium publiczne: aplikacja pyta o zgodę, a po zgodzie łączy i os
   assert.equal(JSON.parse(w.localStorage.getItem('utarg.sync.v1')).branch, 'dane');
   assert.deepEqual(errors, []);
 });
+
+test('przeprowadzka: plik kopii z jednej instalacji wczytany w nowej, potem połączenie z nowym repozytorium przenosi całą historię', async () => {
+  // stara instalacja (np. testy na koncie znajomego z Twoim repozytorium)
+  const old = boot();
+  await tick(60);
+  const keys = [Core.addDays(today, -1), Core.addDays(today, -2), Core.addDays(today, -3)];
+  await old.w.__utarg.submitDay(keys[0], '1000,50', false, null);
+  await old.w.__utarg.submitDay(keys[1], '0', true, null);
+  await old.w.__utarg.submitDay(keys[2], '2500', false, null);
+  const exported = Core.serialize(old.w.__utarg.state.data); // dokładnie to, co daje „Pobierz kopię (JSON)”
+
+  // nowa instalacja: inna domena, pusta pamięć
+  const gh = fakeGithub();
+  const fresh = boot({ fetch: gh.fetch });
+  await tick(60);
+  assert.equal(Core.countEntries(fresh.w.__utarg.state.data), 0);
+  click(fresh.w, q(fresh.doc, '.tabbar [data-view="settings"]'));
+  const input = q(fresh.doc, '#import-file');
+  const file = new fresh.w.File([exported], 'utarg-kopia.json', { type: 'application/json' });
+  Object.defineProperty(input, 'files', { value: [file], configurable: true });
+  input.dispatchEvent(new fresh.w.Event('change', { bubbles: true }));
+  await tick(100);
+  assert.match(text(fresh.doc, '#cf-text'), /Nowych lub nowszych wpisów: 3/);
+  click(fresh.w, q(fresh.doc, '[data-action="confirm-yes"]'));
+  await tick(50);
+  assert.equal(Core.countEntries(fresh.w.__utarg.state.data), 3);
+  assert.equal(Core.getDay(fresh.w.__utarg.state.data, keys[0]).a, 100050);
+  assert.equal(Core.getDay(fresh.w.__utarg.state.data, keys[1]).c, true);
+
+  // połączenie z jego własnym, pustym repozytorium wysyła całą historię
+  typeInto(fresh.w, q(fresh.doc, '#repo-input'), 'jan/utarg-dane');
+  typeInto(fresh.w, q(fresh.doc, '#token-input'), 'tok');
+  click(fresh.w, q(fresh.doc, '[data-action="sync-connect"]'));
+  await tick(300);
+  assert.equal(gh.puts, 1);
+  const uploaded = Core.parseSerialized(gh.file.text).data;
+  assert.equal(Core.countEntries(uploaded), 3);
+  assert.equal(Core.getDay(uploaded, keys[2]).a, 250000);
+  assert.deepEqual(fresh.errors, []);
+});

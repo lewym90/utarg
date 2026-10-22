@@ -5,7 +5,7 @@
   var C = window.UtargCore;
   var Store = window.UtargStore;
   var Sync = window.UtargSync;
-  var APP_VERSION = '1.0.1';
+  var APP_VERSION = '1.0.2';
 
   /* ---------- Narzędzia ---------- */
 
@@ -1103,6 +1103,14 @@
         if (t.id === 'amount-input') { ev.preventDefault(); handleAction(document.querySelector('[data-action="today-save"]'), ev); }
         else if (t.id === 'ed-amount') { ev.preventDefault(); editorSave(); }
         else if (t.id === 'repo-input' || t.id === 'token-input') { ev.preventDefault(); connect(); }
+      }
+    });
+
+    // po zakończeniu pisania wykonaj odroczone odświeżenie (np. zmiany z drugiego urządzenia)
+    document.addEventListener('focusout', function (ev) {
+      if (ev.target && ev.target.id === 'amount-input') {
+        state.typing = false;
+        if (state.deferred) setTimeout(function () { if (!state.typing && state.deferred) refresh(false); }, 250);
       }
     });
 
