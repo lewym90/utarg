@@ -78,6 +78,19 @@ Jak to działa:
 - Aplikacja **odmawia** połączenia z repozytorium publicznym.
 - Token jest przechowywany tylko na urządzeniu i wysyłany wyłącznie do `api.github.com`. Ma dostęp tylko do jednego repozytorium, więc w razie zgubienia telefonu wystarczy go unieważnić na GitHubie.
 
+## Przypomnienie o wpisaniu utargu (powiadomienie na telefonie)
+
+Codziennie o 16:40 (czasu polskiego) zadanie GitHub Actions z pliku `.github/workflows/przypomnienie.yml` sprawdza w danych, czy za dziś jest wpis (utarg albo „zamknięte”). Jeśli nie ma i dziś nie jest stały dzień wolny, wysyła powiadomienie na zapisane telefony. GitHub potrafi opóźnić start o kilka–kilkanaście minut, więc powiadomienie przychodzi zwykle między 16:40 a 17:10 (zadanie wysyła do 17:30, potem odpuszcza). Treść nie zawiera żadnych kwot.
+
+Jednorazowa konfiguracja:
+
+1. W repozytorium: Settings → Secrets and variables → Actions → New repository secret. Nazwa: `VAPID_PRIVATE_KEY`, wartość: klucz prywatny (dostajesz go od autora aplikacji). Klucz publiczny jest w kodzie i w pliku zadania.
+2. Gałąź z danymi to domyślnie `dane`. Jeśli dane są w innej gałęzi, ustaw zmienną repozytorium `UTARG_DATA_BRANCH` (Settings → Secrets and variables → Actions → Variables).
+3. W aplikacji (po włączeniu kopii na GitHubie): Ustawienia → Przypomnienie o utargu → „Włącz przypomnienie”. Na iPhonie najpierw dodaj aplikację do ekranu początkowego (iOS 16.4 lub nowszy).
+4. Test: zakładka Actions → „Przypomnienie o utargu” → Run workflow, zaznacz „Wyślij próbne powiadomienie”. Po chwili telefon pokaże powiadomienie.
+
+Lista telefonów jest w pliku `push-subskrypcje.json` na gałęzi z danymi. Wygasłe subskrypcje są usuwane automatycznie. Ograniczenia: GitHub wyłącza zaplanowane zadania w repozytorium bez żadnej aktywności przez około 60 dni (codzienne wpisy kopii zwykle temu zapobiegają), a powiadomienia z przeglądarki na iPhonie są mniej niezawodne niż z aplikacji ze sklepu.
+
 ## Dlaczego liczenie jest bezbłędne
 
 - Wszystkie kwoty to **liczby całkowite w groszach** (żadnych ułamków, więc żadnych błędów zaokrągleń typu 0,1 + 0,2).
@@ -100,6 +113,8 @@ manifest.webmanifest  instalacja jako aplikacja
 icons/                ikony
 tests/                testy automatyczne
 tools/serve.js        lokalny serwer podglądu
+tools/remind.js       przypomnienie o utargu (uruchamiane przez GitHub Actions)
+.github/workflows/    zadanie przypomnienia
 ```
 
 ## Dobre praktyki dla klienta

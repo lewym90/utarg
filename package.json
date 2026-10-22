@@ -8,6 +8,7 @@
     "serve": "node tools/serve.js"
   },
   "devDependencies": {
-    "jsdom": "^26.0.0"
+    "jsdom": "^26.0.0",
+    "web-push": "^3.6.7"
   }
 }

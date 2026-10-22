@@ -30,6 +30,14 @@ function fakeGithub(isPrivate = true) {
       gh.puts++;
       return res(200, {});
     }
+    if (p === '/repos/jan/utarg-dane/contents/push-subskrypcje.json') {
+      if (method === 'GET') return gh.push ? res(200, { sha: gh.push.sha, content: b64(gh.push.text) }) : res(404, {});
+      const body = JSON.parse(init.body);
+      if ((gh.push ? gh.push.sha : undefined) !== body.sha) return res(409, {});
+      gh.push = { text: unb64(body.content), sha: 'psha' + (++gh.sha) };
+      gh.pushPuts = (gh.pushPuts || 0) + 1;
+      return res(200, {});
+    }
     return res(404, {});
   };
   return gh;
@@ -49,6 +57,7 @@ function boot(opts = {}) {
   w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   w.fetch = opts.fetch || (async () => { throw new TypeError('offline'); });
   if (opts.localStorage) for (const [k, v] of Object.entries(opts.localStorage)) w.localStorage.setItem(k, v);
+  if (opts.setup) opts.setup(w);
   const errors = [];
   w.addEventListener('error', (e) => errors.push(e.message));
   for (const f of ['js/theme-init.js', 'js/core.js', 'js/store.js', 'js/sync.js', 'js/app.js']) {
@@ -937,4 +946,149 @@ test('import CSV wydatków: wczytanie, ponowny import nie dubluje', async () => 
     }
   }
   assert.deepEqual(errors, []);
+});
+
+/** Atrapa przeglądarki z obsługą powiadomień (jsdom jej nie ma). */
+function pushSetup(initialPermission = 'default') {
+  const env = { current: null, shown: [], permission: initialPermission, subscribeArgs: null, unsubscribed: 0 };
+  env.setup = (w) => {
+    const sub = {
+      endpoint: 'https://push.test/abc123',
+      toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'KLUCZ_P', auth: 'KLUCZ_A' } }; },
+      unsubscribe: async () => { env.current = null; env.unsubscribed++; return true; }
+    };
+    const reg = {
+      pushManager: {
+        getSubscription: async () => env.current,
+        subscribe: async (o) => { env.subscribeArgs = o; env.current = sub; return sub; }
+      },
+      showNotification: async (t, o) => { env.shown.push([t, o]); },
+      update: async () => {}
+    };
+    w.PushManager = function PushManager() {};
+    w.Notification = {
+      get permission() { return env.permission; },
+      requestPermission: async () => { if (env.permission === 'default') env.permission = 'granted'; return env.permission; }
+    };
+    Object.defineProperty(w.navigator, 'serviceWorker', {
+      value: { ready: Promise.resolve(reg), register: async () => reg, addEventListener() {}, controller: null },
+      configurable: true
+    });
+  };
+  return env;
+}
+
+async function connectGithub(app) {
+  click(app.w, q(app.doc, '.tabbar [data-view="settings"]'));
+  typeInto(app.w, q(app.doc, '#repo-input'), 'jan/utarg-dane');
+  typeInto(app.w, q(app.doc, '#token-input'), 'tok');
+  click(app.w, q(app.doc, '[data-action="sync-connect"]'));
+  await tick(300);
+}
+
+test('powiadomienia: bez obsługi w przeglądarce karta tłumaczy dlaczego, nic się nie psuje', async () => {
+  const app = boot();
+  await tick(80);
+  click(app.w, q(app.doc, '.tabbar [data-view="settings"]'));
+  assert.match(text(app.doc, '#push-card'), /nie obsługuje powiadomień/);
+  assert.equal(q(app.doc, '[data-action="push-enable"]'), null);
+  assert.deepEqual(app.errors, []);
+});
+
+test('powiadomienia: włączenie wymaga kopii na GitHubie, potem zapisuje telefon w repozytorium i wyłącza go', async () => {
+  const gh = fakeGithub();
+  const env = pushSetup();
+  const app = boot({ fetch: gh.fetch, setup: env.setup });
+  await tick(80);
+  click(app.w, q(app.doc, '.tabbar [data-view="settings"]'));
+  assert.match(text(app.doc, '#push-card'), /Wymaga włączonej kopii/);
+  click(app.w, q(app.doc, '[data-action="push-enable"]'));
+  await tick(50);
+  assert.match(text(app.doc, '#toasts'), /Najpierw włącz kopię/);
+  assert.equal(env.current, null);
+
+  await connectGithub(app);
+  click(app.w, q(app.doc, '.tabbar [data-view="settings"]'));
+  click(app.w, q(app.doc, '[data-action="push-enable"]'));
+  await tick(300);
+  assert.equal(env.permission, 'granted');
+  assert.equal(env.subscribeArgs.userVisibleOnly, true);
+  assert.equal(env.subscribeArgs.applicationServerKey.length, 65); // nieskompresowany klucz P-256
+  assert.ok(env.current);
+  const file = JSON.parse(gh.push.text);
+  assert.equal(file.subs.length, 1);
+  assert.equal(file.subs[0].endpoint, 'https://push.test/abc123');
+  assert.deepEqual(file.subs[0].keys, { p256dh: 'KLUCZ_P', auth: 'KLUCZ_A' });
+  assert.match(text(app.doc, '#push-card'), /Włączone na tym urządzeniu/);
+
+  // próbne powiadomienie pokazuje się lokalnie
+  click(app.w, q(app.doc, '[data-action="push-test"]'));
+  await tick(50);
+  assert.equal(env.shown.length, 1);
+  assert.equal(env.shown[0][0], 'Utarg');
+
+  // ponowne włączenie nie dubluje wpisu
+  await app.w.UtargSync.addSubscription(env.current.toJSON(), 'x');
+  assert.equal(JSON.parse(gh.push.text).subs.length, 1);
+
+  // wyłączenie usuwa telefon z listy i wypisuje z powiadomień
+  click(app.w, q(app.doc, '[data-action="push-disable"]'));
+  await tick(300);
+  assert.equal(JSON.parse(gh.push.text).subs.length, 0);
+  assert.equal(env.unsubscribed, 1);
+  assert.match(text(app.doc, '#push-card'), /Włącz przypomnienie/);
+  assert.deepEqual(app.errors, []);
+});
+
+test('powiadomienia: odmowa zgody pokazuje komunikat i niczego nie zapisuje', async () => {
+  const gh = fakeGithub();
+  const env = pushSetup('denied');
+  const app = boot({ fetch: gh.fetch, setup: env.setup });
+  await tick(80);
+  await connectGithub(app);
+  click(app.w, q(app.doc, '.tabbar [data-view="settings"]'));
+  assert.match(text(app.doc, '#push-card'), /zablokowane/);
+  assert.equal(gh.push, undefined);
+});
+
+test('powiadomienia: jeśli zapis w repozytorium się nie uda, subskrypcja jest wycofana', async () => {
+  const gh = fakeGithub();
+  const env = pushSetup();
+  const app = boot({ fetch: gh.fetch, setup: env.setup });
+  await tick(80);
+  await connectGithub(app);
+  // od teraz zapis listy telefonów kończy się błędem uprawnień
+  const orig = app.w.fetch;
+  app.w.fetch = async (url, init) => {
+    if (String(url).includes('push-subskrypcje') && init && init.method === 'PUT') return { status: 403, headers: { get: () => null }, text: async () => '{}' };
+    return orig(url, init);
+  };
+  click(app.w, q(app.doc, '.tabbar [data-view="settings"]'));
+  click(app.w, q(app.doc, '[data-action="push-enable"]'));
+  await tick(300);
+  assert.equal(env.current, null, 'subskrypcja wycofana');
+  assert.match(text(app.doc, '#push-card'), /uprawnień do zapisu/);
+  assert.match(text(app.doc, '#push-card'), /Włącz przypomnienie/);
+});
+
+test('powiadomienia: po starcie aplikacja sama dopisuje telefon do listy, jeśli subskrypcja już istnieje, a listy brak', async () => {
+  const gh = fakeGithub();
+  const env = pushSetup('granted');
+  const sub = { endpoint: 'https://push.test/abc123', toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'P', auth: 'A' } }; }, unsubscribe: async () => true };
+  env.current = sub;
+  const app = boot({ fetch: gh.fetch, setup: env.setup });
+  await tick(80);
+  await connectGithub(app);
+  await app.w.UtargSync.addSubscription(sub.toJSON(), 'test'); // symuluje naprawę przy następnym starcie
+  assert.equal(JSON.parse(gh.push.text).subs.length, 1);
+});
+
+test('iPhone poza ekranem początkowym: karta tłumaczy, jak włączyć powiadomienia', async () => {
+  const app = boot({ setup: (w) => {
+    Object.defineProperty(w.navigator, 'userAgent', { value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1', configurable: true });
+  } });
+  await tick(80);
+  click(app.w, q(app.doc, '.tabbar [data-view="settings"]'));
+  assert.match(text(app.doc, '#push-card'), /ekranu początkowego/);
+  assert.match(text(app.doc, '#push-card'), /iOS 16\.4/);
 });

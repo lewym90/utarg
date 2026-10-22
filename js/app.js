@@ -5,7 +5,9 @@
   var C = window.UtargCore;
   var Store = window.UtargStore;
   var Sync = window.UtargSync;
-  var APP_VERSION = '1.3.0';
+  var APP_VERSION = '1.4.0';
+  // klucz publiczny powiadomień (taki sam jak w .github/workflows/przypomnienie.yml); klucz prywatny jest tylko w sekrecie GitHuba
+  var VAPID_PUBLIC = 'BGTAK5OnBomV02nkyCFvSXXypgmmgWsRpr7scPM4YByK_Nl5ci6phi_K-vAEJTCbh9o8aC8ySq0pSE6t_y3xg_U';
 
   /* ---------- Narzędzia ---------- */
 
@@ -62,6 +64,7 @@
     year: p0.y,
     yearMode: window.innerWidth >= 900 ? 'table' : 'months',
     analysisPeriod: 'd90',
+    push: { status: 'checking', busy: false, error: '' },
     version: 0,
     sync: { state: 'off', lastSync: 0, error: '', code: '' },
     storageOk: true,
@@ -329,6 +332,162 @@
     h += '<div class="list">' + list.map(expRow).join('');
     if (list.length > 1) h += '<div class="row total"><div class="mid">Razem wydatki</div><div class="amt num neg">' + minus(sum) + '</div></div>';
     return h + '</div></div>';
+  }
+
+
+  /* ---------- Powiadomienia o braku wpisu ---------- */
+
+  var PUSH_EP_KEY = 'utarg.push.ep';
+
+  function isIosDevice() {
+    var ua = navigator.userAgent || '';
+    return /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+
+  function isStandaloneApp() {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+  }
+
+  function pushSupported() {
+    return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  }
+
+  function vapidKey() {
+    var b64 = VAPID_PUBLIC.replace(/-/g, '+').replace(/_/g, '/');
+    var bin = atob(b64 + '==='.slice((b64.length + 3) % 4));
+    var out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  function swReady() {
+    return Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise(function (_, reject) { setTimeout(function () { reject(new Error('timeout')); }, 4000); })
+    ]);
+  }
+
+  function deviceLabel() {
+    var ua = navigator.userAgent || '';
+    if (/iPhone/.test(ua)) return 'iPhone';
+    if (/iPad/.test(ua)) return 'iPad';
+    if (/Android/.test(ua)) return 'Android';
+    if (/Windows/.test(ua)) return 'Windows';
+    if (/Mac/.test(ua)) return 'Mac';
+    return 'urządzenie';
+  }
+
+  /** Ustala, czy powiadomienia są włączone na tym urządzeniu. Przy okazji naprawia zapis w repozytorium. */
+  function refreshPushState() {
+    var p = state.push;
+    if (!pushSupported()) {
+      p.status = isIosDevice() && !isStandaloneApp() ? 'ios-install' : 'unsupported';
+      return Promise.resolve();
+    }
+    if (Notification.permission === 'denied') { p.status = 'denied'; return Promise.resolve(); }
+    return swReady().then(function (reg) {
+      return reg.pushManager.getSubscription();
+    }).then(function (sub) {
+      if (!sub || Notification.permission !== 'granted') { p.status = 'off'; return; }
+      p.status = 'on';
+      if (Store.lsGet(PUSH_EP_KEY) !== sub.endpoint && Sync.getConfig()) {
+        var j = sub.toJSON();
+        return Sync.addSubscription(j, deviceLabel()).then(function () { Store.lsSet(PUSH_EP_KEY, sub.endpoint); }, function () { /* spróbuje przy następnym uruchomieniu */ });
+      }
+    }).catch(function () { p.status = 'off'; });
+  }
+
+  function afterPushChange() {
+    state.push.busy = false;
+    if (state.view === 'settings') refresh(true);
+  }
+
+  function enablePush() {
+    var p = state.push;
+    if (p.busy) return;
+    if (!Sync.getConfig()) {
+      showToast('Najpierw włącz kopię na GitHubie (sekcja wyżej) – tam zapisuje się lista telefonów do powiadomień.', { kind: 'error' });
+      return;
+    }
+    p.busy = true; p.error = '';
+    refresh(true);
+    // zgoda musi być poproszona od razu po dotknięciu przycisku
+    Notification.requestPermission().then(function (perm) {
+      if (perm !== 'granted') {
+        p.status = perm === 'denied' ? 'denied' : 'off';
+        throw new Error(perm === 'denied' ? 'Powiadomienia są zablokowane w ustawieniach telefonu lub przeglądarki.' : 'Nie udzielono zgody na powiadomienia.');
+      }
+      return swReady();
+    }).then(function (reg) {
+      return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey() });
+    }).then(function (sub) {
+      return Sync.addSubscription(sub.toJSON(), deviceLabel()).then(function () {
+        Store.lsSet(PUSH_EP_KEY, sub.endpoint);
+        p.status = 'on';
+        showToast('Przypomnienie włączone');
+      }, function (e) {
+        // zapis w repozytorium się nie udał – wycofaj, żeby stan był spójny
+        return sub.unsubscribe().then(null, function () {}).then(function () { throw e; });
+      });
+    }).then(afterPushChange, function (e) {
+      p.error = e && e.message ? e.message : 'Nie udało się włączyć przypomnienia.';
+      if (p.status === 'on') p.status = 'off';
+      afterPushChange();
+    });
+  }
+
+  function disablePush() {
+    var p = state.push;
+    if (p.busy) return;
+    p.busy = true; p.error = '';
+    refresh(true);
+    swReady().then(function (reg) { return reg.pushManager.getSubscription(); }).then(function (sub) {
+      if (!sub) return null;
+      var done = function () { Store.lsSet(PUSH_EP_KEY, ''); return sub.unsubscribe(); };
+      return Sync.getConfig() ? Sync.removeSubscription(sub.endpoint).then(done) : done();
+    }).then(function () {
+      p.status = 'off';
+      showToast('Przypomnienie wyłączone');
+      afterPushChange();
+    }, function (e) {
+      p.error = e && e.message ? e.message : 'Nie udało się wyłączyć przypomnienia.';
+      afterPushChange();
+    });
+  }
+
+  function testPush() {
+    swReady().then(function (reg) {
+      return reg.showNotification('Utarg', {
+        body: 'Tak będzie wyglądało przypomnienie: nie wpisano jeszcze utargu za dziś.',
+        icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png', tag: 'utarg-test'
+      });
+    }).then(function () { showToast('Wysłano próbne powiadomienie'); }, function () {
+      showToast('Nie udało się pokazać powiadomienia na tym urządzeniu.', { kind: 'error' });
+    });
+  }
+
+  function pushCard() {
+    var p = state.push;
+    var h = '<div class="card" id="push-card"><h2>Przypomnienie o utargu</h2>';
+    h += '<p class="help">Jeśli około 16:40 nie będzie wpisu za dziś (ani utargu, ani oznaczenia „zamknięte”), dostaniesz powiadomienie. Zwykle przychodzi między 16:40 a 17:10. Nie dotyczy stałych dni wolnych.</p>';
+    if (p.status === 'ios-install') {
+      h += '<p class="help">Na iPhonie i iPadzie powiadomienia działają po dodaniu aplikacji do ekranu początkowego (Safari, Udostępnij, „Do ekranu początkowego”) i wymagają iOS 16.4 lub nowszego. Otwórz Utarg z ikony i wróć tutaj.</p>';
+    } else if (p.status === 'unsupported') {
+      h += '<p class="help">Ta przeglądarka nie obsługuje powiadomień z aplikacji.</p>';
+    } else if (p.status === 'denied') {
+      h += '<div class="banner warn">' + icon('alert') + '<div class="grow">Powiadomienia są zablokowane w ustawieniach telefonu lub przeglądarki dla tej aplikacji. Zezwól na nie i wróć tutaj.</div></div>';
+    } else if (p.status === 'on') {
+      h += '<div class="banner info">' + icon('check') + '<div class="grow"><strong>Włączone na tym urządzeniu</strong>Powiadomienie pokaże się, gdy do 16:40 brakuje wpisu.</div></div>' +
+        '<div class="btn-row"><button class="btn small" data-action="push-test">Pokaż próbne powiadomienie</button>' +
+        '<button class="btn small danger" data-action="push-disable"' + (p.busy ? ' disabled' : '') + '>Wyłącz</button></div>';
+    } else if (p.status === 'checking') {
+      h += '<p class="help">Sprawdzam…</p>';
+    } else {
+      if (!Sync.getConfig()) h += '<p class="help">Wymaga włączonej kopii na GitHubie (sekcja wyżej). Tam zapisuje się lista telefonów do powiadomień.</p>';
+      h += '<div class="btn-row"><button class="btn primary" data-action="push-enable"' + (p.busy ? ' disabled' : '') + '>' + icon('note') + (p.busy ? 'Włączam…' : 'Włącz przypomnienie') + '</button></div>';
+    }
+    if (p.error) h += '<p class="hero-hint err" role="alert">' + esc(p.error) + '</p>';
+    return h + '</div>';
   }
 
   /* ---------- Teksty pomocnicze ---------- */
@@ -837,6 +996,7 @@
       '<div class="chips">' + order.map(function (d) {
         return '<button class="chip" data-action="weekday" data-d="' + d + '" aria-pressed="' + (st.closedWeekdays.indexOf(d) >= 0) + '">' + cap(C.WEEKDAYS[d]) + '</button>';
       }).join('') + '</div></div>';
+    h += pushCard();
     h += '<div class="card" id="cost-card"><h2>Koszt otwarcia sklepu</h2><p class="help">Opcjonalnie. Dzienny koszt, poniżej którego otwarcie się nie opłaca (np. pensja pracownika, opłata za dzień). Wpisuj tu tylko koszty codzienne. Towar, prąd, czynsz i inne jednorazowe rachunki dodawaj jako wydatki – nie wpływają one na ocenę dni. Analiza pokaże dni i okoliczności z utargiem niższym niż ten koszt.</p>' +
       '<div class="amount-field plain"><input id="cost-input" class="input" type="text" inputmode="decimal" autocomplete="off" placeholder="np. 300 (puste = wyłączone)" aria-label="Dzienny koszt otwarcia w złotych" value="' + (st.openCost ? esc(C.toInputString(st.openCost)) : '') + '"><span class="amount-cur" aria-hidden="true">zł</span></div>' +
       '<p class="hero-hint err" id="cost-hint" role="alert"></p></div>';
@@ -1669,6 +1829,9 @@
         download('utarg-wydatki-' + ey + '.csv', '\ufeff' + C.csvExpenses(state.data, ey), 'text/csv;charset=utf-8');
         break;
       }
+      case 'push-enable': enablePush(); break;
+      case 'push-disable': disablePush(); break;
+      case 'push-test': testPush(); break;
       case 'sync-connect': connect(); break;
       case 'sync-now': Store.setDirty(true); Sync.run(); break;
       case 'sync-disconnect':
@@ -1851,6 +2014,7 @@
     applyTheme();
     if (Sync.getConfig()) Sync.run();
     Store.requestPersistence();
+    refreshPushState().then(function () { if (state.view === 'settings') refresh(false); });
   }
 
   function start() {

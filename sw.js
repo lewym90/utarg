@@ -4,7 +4,7 @@
  * Zapytania do GitHuba (inna domena) nie są przechwytywane.
  * Przy wydawaniu nowej wersji zmień VERSION.
  */
-var VERSION = 'utarg-1.3.0';
+var VERSION = 'utarg-1.4.0';
 var ASSETS = [
   './',
   'index.html',
@@ -84,4 +84,29 @@ self.addEventListener('fetch', function (event) {
   var url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   event.respondWith(networkFirst(req));
+});
+
+/* ----- Powiadomienia (przypomnienie o wpisaniu utargu, wysyłane z GitHuba) ----- */
+
+self.addEventListener('push', function (event) {
+  var data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (e) { data = { body: event.data ? event.data.text() : '' }; }
+  event.waitUntil(self.registration.showNotification(data.title || 'Utarg', {
+    body: data.body || 'Nie wpisano jeszcze utargu za dziś.',
+    icon: 'icons/icon-192.png',
+    badge: 'icons/favicon-32.png',
+    tag: 'utarg-przypomnienie',
+    data: { url: data.url || './' }
+  }));
+});
+
+self.addEventListener('notificationclick', function (event) {
+  event.notification.close();
+  var target = new URL((event.notification.data && event.notification.data.url) || './', self.registration.scope).href;
+  event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].url.indexOf(self.registration.scope) === 0 && 'focus' in list[i]) return list[i].focus();
+    }
+    return self.clients.openWindow(target);
+  }));
 });

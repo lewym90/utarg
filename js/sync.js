@@ -328,6 +328,74 @@
     });
   }
 
+  /* ---------- Powiadomienia: lista telefonów w repozytorium ---------- */
+
+  var PUSH_PATH = 'push-subskrypcje.json';
+  var MAX_SUBS = 10;
+
+  function validSub(s) {
+    return !!s && typeof s.endpoint === 'string' && /^https:\/\//.test(s.endpoint) &&
+      !!s.keys && typeof s.keys.p256dh === 'string' && typeof s.keys.auth === 'string';
+  }
+
+  /**
+   * Zmienia listę zapisanych telefonów (plik obok danych, na tej samej gałęzi). mutator(lista) → nowa lista.
+   * Przy równoległej zmianie z innego urządzenia pobiera plik jeszcze raz.
+   */
+  function updateSubscriptions(mutator) {
+    var cfg = loadConfig();
+    if (!cfg) return Promise.reject(SyncError('nocfg', 'Najpierw włącz kopię na GitHubie.'));
+    var pc = { owner: cfg.owner, repo: cfg.repo, branch: cfg.branch, path: PUSH_PATH, token: cfg.token };
+    var ref = cfg.branch ? '?ref=' + encodeURIComponent(cfg.branch) : '';
+    function attempt(n) {
+      return request(pc, 'GET', contentsPath(pc) + ref).then(function (res) {
+        var sha = null, list = [];
+        if (res.status === 200 && res.json && typeof res.json.content === 'string') {
+          sha = res.json.sha;
+          try {
+            var j = JSON.parse(fromB64(res.json.content));
+            if (j && Array.isArray(j.subs)) list = j.subs.filter(validSub);
+          } catch (e) {
+            throw SyncError('corrupt', 'Plik z listą powiadomień na GitHubie jest uszkodzony.');
+          }
+        } else if (res.status !== 404) {
+          throw failFromStatus(res);
+        }
+        var next = mutator(list.slice());
+        if (JSON.stringify(next) === JSON.stringify(list) && (sha || !next.length)) return true;
+        var body = {
+          message: 'Utarg: powiadomienia (' + next.length + ' ' + C.plural(next.length, 'urządzenie', 'urządzenia', 'urządzeń') + ')',
+          content: toB64(JSON.stringify({ v: 1, subs: next }, null, 2) + '\n')
+        };
+        if (pc.branch) body.branch = pc.branch;
+        if (sha) body.sha = sha;
+        return request(pc, 'PUT', contentsPath(pc), body).then(function (put) {
+          if (put.status === 200 || put.status === 201) return true;
+          if ((put.status === 409 || put.status === 422) && n < MAX_ATTEMPTS) return attempt(n + 1);
+          throw failFromStatus(put);
+        });
+      });
+    }
+    return attempt(1);
+  }
+
+  /** Zapisuje telefon do powiadomień (sub: { endpoint, keys: { p256dh, auth } }). */
+  function addSubscription(sub, label) {
+    var rec = { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth }, t: Date.now(), label: String(label || '').slice(0, 40) };
+    if (!validSub(rec)) return Promise.reject(SyncError('other', 'Nieprawidłowa subskrypcja powiadomień.'));
+    return updateSubscriptions(function (list) {
+      var out = list.filter(function (s) { return s.endpoint !== rec.endpoint; });
+      out.push(rec);
+      return out.slice(-MAX_SUBS);
+    });
+  }
+
+  function removeSubscription(endpoint) {
+    return updateSubscriptions(function (list) {
+      return list.filter(function (s) { return s.endpoint !== endpoint; });
+    });
+  }
+
   /** Łączy z repozytorium: sprawdza dostęp i robi pierwszą synchronizację. */
   function connect(owner, repo, token, opts) {
     opts = opts || {};
@@ -364,6 +432,7 @@
 
   root.UtargSync = {
     init: init, schedule: schedule, run: run, poll: poll, connect: connect, disconnect: disconnect,
+    addSubscription: addSubscription, removeSubscription: removeSubscription,
     getStatus: getStatus, getConfig: getConfigPublic, parseRepo: parseRepo,
     // udostępnione do testów
     _pullPush: pullPush, _toB64: toB64, _fromB64: fromB64

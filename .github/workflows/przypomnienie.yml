@@ -1,0 +1,67 @@
+name: Przypomnienie o utargu
+
+# Codziennie o 16:40 czasu polskiego (GitHub potrafi opóźnić start o kilka–kilkanaście minut).
+# Dwa wpisy, bo UTC różni się od czasu polskiego latem i zimą; skrypt sam sprawdza godzinę i działa tylko raz.
+on:
+  schedule:
+    - cron: '40 14 * * *'
+    - cron: '40 15 * * *'
+  workflow_dispatch:
+    inputs:
+      test:
+        description: 'Wyślij próbne powiadomienie niezależnie od wpisu'
+        type: boolean
+        default: false
+      force:
+        description: 'Pomiń okno godzinowe (wyślij, jeśli brak wpisu)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: przypomnienie
+  cancel-in-progress: false
+
+jobs:
+  przypomnienie:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Pobierz kod
+        uses: actions/checkout@v4
+
+      - name: Pobierz dane (gałąź z danymi, domyślnie „dane”)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.UTARG_DATA_BRANCH || 'dane' }}
+          path: data
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Zainstaluj bibliotekę powiadomień
+        run: npm install --no-save --no-audit --no-fund web-push@3.6.7
+
+      - name: Wyślij przypomnienie
+        env:
+          VAPID_PUBLIC_KEY: 'BGTAK5OnBomV02nkyCFvSXXypgmmgWsRpr7scPM4YByK_Nl5ci6phi_K-vAEJTCbh9o8aC8ySq0pSE6t_y3xg_U'
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          TEST: ${{ inputs.test }}
+          FORCE: ${{ inputs.force }}
+          DATA_DIR: data
+        run: node tools/remind.js
+
+      - name: Zapisz usunięcie wygasłych subskrypcji
+        working-directory: data
+        run: |
+          if [ -n "$(git status --porcelain push-subskrypcje.json)" ]; then
+            git config user.name "Utarg przypomnienie"
+            git config user.email "utarg-przypomnienie@users.noreply.github.com"
+            git add push-subskrypcje.json
+            git commit -m "Utarg: usunięto wygasłe subskrypcje powiadomień"
+            git pull --rebase
+            git push
+          fi
