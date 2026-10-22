@@ -1,0 +1,13 @@
+{
+  "name": "utarg",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Utarg – aplikacja do codziennego zapisywania i sumowania utargu sklepu (PWA).",
+  "scripts": {
+    "test": "node --test --test-force-exit \"tests/*.test.js\"",
+    "serve": "node tools/serve.js"
+  },
+  "devDependencies": {
+    "jsdom": "^26.0.0"
+  }
+}
