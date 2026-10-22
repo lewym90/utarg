@@ -1,0 +1,27 @@
+/* Utarg – raporty do druku / PDF. Te same reguły trafiają do pliku HTML pobieranego na iPhonie. */
+.report { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #111; background: #fff; font-size: 12px; line-height: 1.35; }
+.report h1 { font-size: 20px; margin: 0; }
+.report p { margin: 2px 0 0; color: #555; }
+.rp-head { display: flex; align-items: center; gap: 14px; padding-bottom: 10px; border-bottom: 2px solid #0c7a6b; margin-bottom: 12px; }
+.rp-brand { font-size: 22px; font-weight: 800; color: #0c7a6b; letter-spacing: -0.02em; }
+.rp-sum { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 12px; }
+.rp-sum > div { border: 1px solid #cdd8d6; border-radius: 6px; padding: 6px 8px; }
+.rp-sum span { display: block; font-size: 10px; color: #555; }
+.rp-sum b { font-size: 13px; font-variant-numeric: tabular-nums; }
+.rp-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.rp-table th, .rp-table td { padding: 3px 6px; border-bottom: 1px solid #dde5e3; text-align: left; }
+.rp-table thead th { background: #eef3f2; font-size: 11px; border-bottom: 1px solid #9db3af; }
+.rp-table .r { text-align: right; }
+.rp-table tr.muted td { color: #777; }
+.rp-table tr.miss td { color: #a06a00; }
+.rp-table tfoot td { font-weight: 800; font-size: 13px; border-top: 2px solid #0c7a6b; border-bottom: 0; }
+.report tr { break-inside: avoid; }
+.doc { margin: 0; padding: 16px; background: #fff; }
+.noprint { color: #555; font-size: 12px; margin-top: 16px; }
+@media print {
+  @page { margin: 12mm; }
+  body.printing #app { display: none !important; }
+  body.printing .print-only { display: block !important; }
+  body.printing { background: #fff; }
+  .noprint { display: none; }
+}

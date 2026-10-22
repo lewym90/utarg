@@ -205,14 +205,23 @@
    *  a = kwota w groszach; null = wpis usunięty (znacznik usunięcia, potrzebny do synchronizacji)
    *  c = true → dzień oznaczony jako „sklep zamknięty” (a wynosi wtedy 0)
    *  t = czas ostatniej zmiany (ms)
+   *  n = opcjonalna krótka notatka (np. „deszcz”), tylko przy aktywnym wpisie
    */
 
   function emptyData() {
     return { v: 1, days: {} };
   }
 
+  var NOTE_MAX = 60;
+
+  /** Notatka do dnia: przycięta, bez znaków sterujących i podwójnych spacji. */
+  function normalizeNote(s) {
+    if (typeof s !== 'string') return '';
+    return s.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, NOTE_MAX).trim();
+  }
+
   function recString(r) {
-    return (r.a === null ? 'n' : r.a) + '|' + (r.c ? 1 : 0) + '|' + r.t;
+    return (r.a === null ? 'n' : r.a) + '|' + (r.c ? 1 : 0) + '|' + r.t + '|' + (r.n || '');
   }
 
   /** Zwraca aktywny wpis dnia albo null. */
@@ -222,7 +231,7 @@
   }
 
   /** Nowy obiekt danych z zapisanym dniem. amount: grosze albo null (usuń). */
-  function setDay(data, key, amount, closed, now) {
+  function setDay(data, key, amount, closed, now, note) {
     if (!parseKey(key)) throw new Error('Niepoprawna data: ' + key);
     var rec;
     if (amount === null) {
@@ -230,6 +239,8 @@
     } else {
       if (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_GROSZE) throw new Error('Niepoprawna kwota');
       rec = { a: closed ? 0 : amount, c: !!closed, t: now };
+      var nn = normalizeNote(note);
+      if (nn) rec.n = nn;
     }
     // znacznik czasu zawsze rośnie, żeby ta zmiana wygrała ze starszą wersją
     var prev = data.days[key];
@@ -274,6 +285,8 @@
       if (!Number.isSafeInteger(r.a) || r.a < 0 || r.a > MAX_GROSZE) { dropped++; return; }
       var c = r.c === true;
       out.days[k] = { a: c ? 0 : r.a, c: c, t: t };
+      var nn = normalizeNote(r.n);
+      if (nn) out.days[k].n = nn;
     });
     return { data: out, dropped: dropped };
   }
@@ -284,7 +297,7 @@
     var lines = keys.map(function (k) {
       var r = data.days[k];
       return '    "' + k + '": {"a": ' + (r.a === null ? 'null' : r.a) +
-        ', "c": ' + (r.c ? 'true' : 'false') + ', "t": ' + r.t + '}';
+        ', "c": ' + (r.c ? 'true' : 'false') + ', "t": ' + r.t + (r.n ? ', "n": ' + JSON.stringify(r.n) : '') + '}';
     });
     return '{\n  "app": "utarg",\n  "v": 1,\n  "days": {\n' + lines.join(',\n') + (lines.length ? '\n' : '') + '  }\n}\n';
   }
@@ -416,6 +429,320 @@
     return { max: max, count: n };
   }
 
+  /* ---------- Notatki i analiza ---------- */
+
+  /** Znane okoliczności rozpoznawane w notatkach (po fragmencie słowa, bez rozróżniania wielkości liter). */
+  var TAGS = [
+    { id: 'rain', label: 'Deszcz', stems: ['desz', 'ulew', 'burz'] },
+    { id: 'heat', label: 'Upał', stems: ['upał', 'upal', 'gorąc', 'gorac'] },
+    { id: 'snow', label: 'Śnieg', stems: ['śnie', 'snie', 'mróz', 'mroz', 'gołoled', 'gololed'] },
+    { id: 'promo', label: 'Promocja', stems: ['promo', 'wyprzed', 'rabat'] },
+    { id: 'holiday', label: 'Święto', stems: ['święt', 'swiet', 'majówk', 'majowk', 'długi weekend', 'dlugi weekend'] }
+  ];
+
+  var WEEKDAYS_ACC = ['niedziele', 'poniedziałki', 'wtorki', 'środy', 'czwartki', 'piątki', 'soboty'];
+
+  function tagsOf(note) {
+    var low = String(note || '').toLowerCase();
+    if (!low) return [];
+    return TAGS.filter(function (t) {
+      return t.stems.some(function (st) { return low.indexOf(st) >= 0; });
+    }).map(function (t) { return t.id; });
+  }
+
+  function tagLabel(id) {
+    for (var i = 0; i < TAGS.length; i++) if (TAGS[i].id === id) return TAGS[i].label;
+    return id;
+  }
+
+  /**
+   * Analiza dni z zakresu [from, to] (klucze dat; to domyślnie dziś).
+   * Dni „otwarte” to wpisy z kwotą (bez oznaczenia „zamknięte”). Dni zamknięte liczone osobno.
+   * Wszystkie kwoty w groszach, średnie zaokrąglone do grosza.
+   */
+  function analyze(data, opts) {
+    opts = opts || {};
+    var today = opts.today || todayKey();
+    var from = opts.from || '0000-01-01';
+    var to = opts.to && opts.to < today ? opts.to : today;
+    var openCost = opts.openCost > 0 ? opts.openCost : 0;
+
+    var wd = [];
+    for (var i = 0; i < 7; i++) wd.push({ wd: i, n: 0, total: 0, avg: 0, closed: 0 });
+    var tagStats = {};
+    TAGS.forEach(function (t) { tagStats[t.id] = { id: t.id, label: t.label, n: 0, total: 0, avg: 0, closed: 0 }; });
+
+    var list = [];
+    var total = 0, closedDays = 0, belowCost = 0;
+    Object.keys(data.days).sort().forEach(function (k) {
+      var r = data.days[k];
+      if (r.a === null || k < from || k > to) return;
+      var w = weekdayOfKey(k);
+      var tg = tagsOf(r.n);
+      if (r.c) {
+        closedDays++;
+        wd[w].closed++;
+        tg.forEach(function (id) { tagStats[id].closed++; });
+        return;
+      }
+      list.push({ key: k, a: r.a, n: r.n || '', wd: w, tags: tg });
+      total += r.a;
+      wd[w].n++; wd[w].total += r.a;
+      tg.forEach(function (id) { tagStats[id].n++; tagStats[id].total += r.a; });
+      if (openCost && r.a < openCost) belowCost++;
+    });
+
+    wd.forEach(function (x) { x.avg = x.n ? Math.round(x.total / x.n) : 0; });
+    var openDays = list.length;
+    var avg = openDays ? Math.round(total / openDays) : 0;
+
+    var tags = [];
+    TAGS.forEach(function (t) {
+      var x = tagStats[t.id];
+      if (!x.n && !x.closed) return;
+      x.avg = x.n ? Math.round(x.total / x.n) : 0;
+      var restN = openDays - x.n, restTotal = total - x.total;
+      x.restAvg = restN > 0 ? Math.round(restTotal / restN) : 0;
+      x.restN = restN;
+      x.diffPct = x.n && restN > 0 && x.restAvg > 0 ? Math.round((x.avg - x.restAvg) / x.restAvg * 100) : null;
+      tags.push(x);
+    });
+
+    var sorted = list.slice().sort(function (a, b) { return b.a - a.a || (a.key < b.key ? 1 : -1); });
+    var best = sorted.slice(0, 3);
+    // najsłabsze dni nie powtarzają się z najlepszymi
+    var worst = sorted.slice(best.length).slice(-3).reverse();
+    return {
+      from: from, to: to, openDays: openDays, closedDays: closedDays, total: total, avg: avg,
+      weekdays: wd, tags: tags, openCost: openCost, belowCost: belowCost,
+      best: best, worst: worst
+    };
+  }
+
+  /** Suma i liczba dni z utargiem w miesiącu, ale tylko do dnia `upTo` włącznie (uczciwe porównanie). */
+  function monthToDay(data, y, m, upTo) {
+    var n = Math.min(upTo, daysInMonth(y, m));
+    var total = 0, open = 0;
+    for (var d = 1; d <= n; d++) {
+      var r = getDay(data, dateKey(y, m, d));
+      if (r) { total += r.a; if (!r.c) open++; }
+    }
+    return { y: y, m: m, upTo: n, total: total, open: open };
+  }
+
+  /** Bieżący miesiąc kontra poprzedni miesiąc i ten sam miesiąc rok temu – do tego samego dnia miesiąca. */
+  function compareMonths(data, today) {
+    var p = parseKey(today);
+    var pm = p.m === 0 ? { y: p.y - 1, m: 11 } : { y: p.y, m: p.m - 1 };
+    return {
+      day: p.d,
+      cur: monthToDay(data, p.y, p.m, p.d),
+      prev: monthToDay(data, pm.y, pm.m, p.d),
+      lastYear: monthToDay(data, p.y - 1, p.m, p.d)
+    };
+  }
+
+  /** Ostatnie `count` miesięcy (łącznie z bieżącym), od najstarszego. */
+  function trendMonths(data, today, count) {
+    var p = parseKey(today);
+    var out = [];
+    for (var i = count - 1; i >= 0; i--) {
+      var idx = p.y * 12 + p.m - i;
+      var y = Math.floor(idx / 12), m = idx - y * 12;
+      var s = monthToDay(data, y, m, 31);
+      out.push({ y: y, m: m, total: s.total, open: s.open });
+    }
+    return out;
+  }
+
+  /** Zmiana procentowa (całkowita) albo null, gdy nie ma punktu odniesienia. */
+  function pctChange(now, before) {
+    if (!(before > 0)) return null;
+    return Math.round((now - before) / before * 100);
+  }
+
+  /** Gotowe zdania z wnioskami. Wymaga minimum danych, żeby nie wyciągać pochopnych wniosków. */
+  function insights(an) {
+    var out = [];
+    if (an.openDays < 7) return out;
+    var money = formatMoney;
+
+    var wds = an.weekdays.filter(function (x) { return x.n >= 2; });
+    if (wds.length >= 3) {
+      var hi = wds.reduce(function (a, b) { return b.avg > a.avg ? b : a; });
+      var lo = wds.reduce(function (a, b) { return b.avg < a.avg ? b : a; });
+      if (hi.wd !== lo.wd && hi.avg > lo.avg) {
+        out.push('Najlepszy dzień tygodnia: ' + WEEKDAYS[hi.wd] + ' (średnio ' + money(hi.avg) + '). Najsłabszy: ' + WEEKDAYS[lo.wd] + ' (średnio ' + money(lo.avg) + ').');
+      }
+    }
+    an.tags.forEach(function (t) {
+      if (t.n >= 3 && t.diffPct !== null && Math.abs(t.diffPct) >= 10) {
+        out.push('W dni z notatką „' + t.label.toLowerCase() + '” (' + t.n + ' ' + plural(t.n, 'dzień', 'dni', 'dni') + ') średni utarg to ' + money(t.avg) +
+          ', czyli o ' + Math.abs(t.diffPct) + '% ' + (t.diffPct < 0 ? 'mniej' : 'więcej') + ' niż w pozostałe dni.');
+      }
+    });
+    if (an.openCost > 0) {
+      an.weekdays.forEach(function (x) {
+        if (x.n >= 3 && x.avg < an.openCost) {
+          out.push('W ' + WEEKDAYS_ACC[x.wd] + ' średni utarg (' + money(x.avg) + ') jest niższy niż koszt otwarcia (' + money(an.openCost) + '). Rozważ zamknięcie w ten dzień.');
+        }
+      });
+      an.tags.forEach(function (t) {
+        if (t.n >= 3 && t.avg < an.openCost) {
+          out.push('W dni z notatką „' + t.label.toLowerCase() + '” średni utarg (' + money(t.avg) + ') jest niższy niż koszt otwarcia (' + money(an.openCost) + ').');
+        }
+      });
+      if (an.belowCost > 0) {
+        var pct = Math.round(an.belowCost / an.openDays * 100);
+        out.push(an.belowCost + ' z ' + an.openDays + ' dni (' + pct + '%) miało utarg poniżej kosztu otwarcia.');
+      }
+    }
+    return out;
+  }
+
+  /* ---------- Import CSV ---------- */
+
+  function splitCsvLine(line, delim) {
+    var out = [], cur = '', q = false;
+    for (var i = 0; i < line.length; i++) {
+      var ch = line[i];
+      if (q) {
+        if (ch === '"') {
+          if (line[i + 1] === '"') { cur += '"'; i++; } else q = false;
+        } else cur += ch;
+      } else if (ch === '"') q = true;
+      else if (ch === delim) { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out;
+  }
+
+  /** Data w formacie RRRR-MM-DD, DD.MM.RRRR, DD-MM-RRRR lub DD/MM/RRRR → klucz albo null. */
+  function parseDateCell(s) {
+    s = String(s).trim();
+    var m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+    var y, mo, d;
+    if (m) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+    else {
+      m = /^(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{4})$/.exec(s);
+      if (!m) return null;
+      d = +m[1]; mo = +m[2]; y = +m[3];
+    }
+    if (mo < 1 || mo > 12 || y < MIN_YEAR || y > MAX_YEAR || d < 1 || d > daysInMonth(y, mo - 1)) return null;
+    return dateKey(y, mo - 1, d);
+  }
+
+  var CLOSED_WORD = /^(zamk|wolne|nieczynne)/i;
+
+  function parseAmountCell(s) {
+    var t = String(s).replace(/[\s ]/g, '').replace(/zł|pln/ig, '');
+    if (CLOSED_WORD.test(t)) return { ok: true, closed: true, value: 0 };
+    if (t === '') return { ok: false, empty: true };
+    var r = parseAmount(t);
+    return r.ok ? { ok: true, closed: false, value: r.value } : { ok: false, error: r.error };
+  }
+
+  /**
+   * Czyta plik CSV z historią. Rozpoznaje dwa układy:
+   *  1) tabela roczna z Utarg (nagłówek „Dzień;styczeń;…”, ostatni wiersz „Razem rok RRRR”),
+   *  2) lista: data;kwota[;notatka] (np. z Excela).
+   * opts: { today, year (rok z nazwy pliku, gdy tabela nie podaje roku) }.
+   * Zwraca { entries: [{key, a, c, n}], skipped: [{line, reason}], layout }.
+   * Niejednoznaczne kwoty (np. „1.234”) są pomijane z komunikatem – nic nie jest zgadywane.
+   */
+  function parseCsvImport(text, opts) {
+    opts = opts || {};
+    var today = opts.today || todayKey();
+    text = String(text).replace(/^﻿/, '');
+    var lines = text.split(/\r\n|\n|\r/);
+    var firstLine = '';
+    for (var li = 0; li < lines.length; li++) { if (lines[li].trim() !== '') { firstLine = lines[li]; break; } }
+    var delim = firstLine.indexOf(';') >= 0 ? ';' : (firstLine.indexOf('\t') >= 0 ? '\t' : ',');
+    var entries = {};
+    var skipped = [];
+    var layout = 'list';
+
+    var rows = lines.map(function (l) { return splitCsvLine(l, delim); });
+    var head = null;
+    for (var ri = 0; ri < rows.length; ri++) { if (rows[ri].join('').trim() !== '') { head = rows[ri]; break; } }
+    var isYear = !!head && /^dzie[nń]$/i.test((head[0] || '').trim()) && /^styczeń$/i.test((head[1] || '').trim());
+
+    if (isYear) {
+      layout = 'year';
+      var year = null;
+      rows.forEach(function (r) {
+        var m = /^razem rok (\d{4})$/i.exec((r[0] || '').trim());
+        if (m) year = +m[1];
+      });
+      if (year === null) year = opts.year || null;
+      if (year === null || year < MIN_YEAR || year > MAX_YEAR) {
+        return { entries: [], skipped: [{ line: 0, reason: 'Nie udało się ustalić roku tabeli.' }], layout: layout, error: 'year' };
+      }
+      rows.forEach(function (r, idx) {
+        var d = /^\d{1,2}$/.test((r[0] || '').trim()) ? +r[0].trim() : 0;
+        if (d < 1 || d > 31) return;
+        for (var m = 0; m < 12; m++) {
+          var cell = (r[m + 1] || '').trim();
+          if (cell === '') continue;
+          if (d > daysInMonth(year, m)) { skipped.push({ line: idx + 1, reason: 'Taki dzień nie istnieje' }); continue; }
+          var key = dateKey(year, m, d);
+          var a = parseAmountCell(cell);
+          if (!a.ok) { skipped.push({ line: idx + 1, reason: 'Nierozpoznana kwota „' + cell + '”' }); continue; }
+          entries[key] = { key: key, a: a.value, c: a.closed, n: '' };
+        }
+      });
+    } else {
+      var seenData = false;
+      rows.forEach(function (r, idx) {
+        if (r.join('').trim() === '') return;
+        var key = parseDateCell(r[0] || '');
+        if (!key) {
+          // pierwszy niepusty wiersz bez daty to nagłówek kolumn
+          if (!seenData && r === head) return;
+          skipped.push({ line: idx + 1, reason: 'Nierozpoznana data „' + (r[0] || '').trim() + '”' });
+          return;
+        }
+        seenData = true;
+        var a = parseAmountCell(r[1] || '');
+        if (!a.ok) {
+          if (a.empty) return;
+          skipped.push({ line: idx + 1, reason: 'Nierozpoznana kwota „' + (r[1] || '').trim() + '”' + (a.error ? ' – ' + a.error : '') });
+          return;
+        }
+        entries[key] = { key: key, a: a.value, c: a.closed, n: normalizeNote(r.slice(2).join(' ')) };
+      });
+    }
+
+    var kept = [];
+    Object.keys(entries).sort().forEach(function (k) {
+      if (k > today) skipped.push({ line: 0, reason: 'Data z przyszłości: ' + k });
+      else kept.push(entries[k]);
+    });
+    return { entries: kept, skipped: skipped, layout: layout };
+  }
+
+  /**
+   * Dopisuje wpisy z importu. Dni, które już mają wpis, są pomijane (nic nie jest nadpisywane).
+   * Zwraca { data, added, existing }.
+   */
+  function addEntries(data, entries, now) {
+    var days = {};
+    Object.keys(data.days).forEach(function (k) { days[k] = data.days[k]; });
+    var added = 0, existing = 0;
+    entries.forEach(function (e) {
+      if (getDay(data, e.key)) { existing++; return; }
+      var prev = data.days[e.key];
+      var t = prev && now <= prev.t ? prev.t + 1 : now;
+      var rec = { a: e.c ? 0 : e.a, c: !!e.c, t: t };
+      var nn = normalizeNote(e.n);
+      if (nn) rec.n = nn;
+      days[e.key] = rec;
+      added++;
+    });
+    return { data: { v: 1, days: days }, added: added, existing: existing };
+  }
+
   /* ---------- Eksport ---------- */
 
   function csvCell(v) {
@@ -431,7 +758,7 @@
       var row = [d];
       for (var m = 0; m < 12; m++) {
         var r = d <= daysInMonth(y, m) ? getDay(data, dateKey(y, m, d)) : null;
-        row.push(r ? formatGrosze(r.a).replace(/ /g, '') : '');
+        row.push(r ? (r.c ? 'zamknięte' : formatGrosze(r.a).replace(/ /g, '')) : '');
       }
       rows.push(row.map(csvCell).join(';'));
     }
@@ -453,6 +780,9 @@
     serialize: serialize, parseSerialized: parseSerialized, sameData: sameData, countEntries: countEntries,
     isStandingClosed: isStandingClosed, monthStats: monthStats, yearStats: yearStats,
     yearTotalDirect: yearTotalDirect, missingRecent: missingRecent, recentEntries: recentEntries,
-    maxOpenDay: maxOpenDay, csvYear: csvYear
+    maxOpenDay: maxOpenDay, csvYear: csvYear,
+    NOTE_MAX: NOTE_MAX, TAGS: TAGS, normalizeNote: normalizeNote, tagsOf: tagsOf, tagLabel: tagLabel,
+    analyze: analyze, monthToDay: monthToDay, compareMonths: compareMonths, trendMonths: trendMonths,
+    pctChange: pctChange, insights: insights, parseCsvImport: parseCsvImport, parseDateCell: parseDateCell, addEntries: addEntries
   };
 });

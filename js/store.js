@@ -15,7 +15,7 @@
   var DB_NAME = 'utarg';
   var DB_STORE = 'kv';
 
-  var DEFAULT_SETTINGS = { theme: 'auto', closedWeekdays: [] };
+  var DEFAULT_SETTINGS = { theme: 'auto', closedWeekdays: [], openCost: 0 };
 
   function lsGet(k) {
     try { return localStorage.getItem(k); } catch (e) { return null; }
@@ -112,7 +112,7 @@
   /* ---------- Ustawienia ---------- */
 
   function loadSettings() {
-    var s = { theme: DEFAULT_SETTINGS.theme, closedWeekdays: [] };
+    var s = { theme: DEFAULT_SETTINGS.theme, closedWeekdays: [], openCost: 0 };
     var raw = lsGet(KEY_SETTINGS);
     if (!raw) return s;
     try {
@@ -123,12 +123,13 @@
           return Number.isInteger(d) && d >= 0 && d <= 6 && a.indexOf(d) === i;
         });
       }
+      if (o && Number.isSafeInteger(o.openCost) && o.openCost > 0 && o.openCost <= C.MAX_GROSZE) s.openCost = o.openCost;
     } catch (e) { /* użyj domyślnych */ }
     return s;
   }
 
   function saveSettings(s) {
-    return lsSet(KEY_SETTINGS, JSON.stringify({ theme: s.theme, closedWeekdays: s.closedWeekdays }));
+    return lsSet(KEY_SETTINGS, JSON.stringify({ theme: s.theme, closedWeekdays: s.closedWeekdays, openCost: s.openCost || 0 }));
   }
 
   /* ---------- Flaga „są zmiany niewysłane na GitHub” ---------- */

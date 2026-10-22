@@ -4,12 +4,13 @@
  * Zapytania do GitHuba (inna domena) nie są przechwytywane.
  * Przy wydawaniu nowej wersji zmień VERSION.
  */
-var VERSION = 'utarg-1.0.2';
+var VERSION = 'utarg-1.1.0';
 var ASSETS = [
   './',
   'index.html',
   'manifest.webmanifest',
   'css/style.css',
+  'css/report.css',
   'js/theme-init.js',
   'js/core.js',
   'js/store.js',

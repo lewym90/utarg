@@ -5,7 +5,7 @@
   var C = window.UtargCore;
   var Store = window.UtargStore;
   var Sync = window.UtargSync;
-  var APP_VERSION = '1.0.2';
+  var APP_VERSION = '1.1.0';
 
   /* ---------- Narzędzia ---------- */
 
@@ -37,7 +37,10 @@
     list: '<path d="M8.5 7h11M8.5 12h11M8.5 17h11M4.6 7h.01M4.6 12h.01M4.6 17h.01"/>',
     table: '<rect x="3.5" y="5" width="17" height="14" rx="3"/><path d="M3.5 10h17M9.5 5v14"/>',
     shield: '<path d="M12 3.5l7 2.6v5.4c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6.1z"/><path d="M9 12.2l2.2 2.2 3.8-4"/>',
-    refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/>'
+    refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/>',
+    trend: '<path d="M4 17l5-5.5 3.5 3.5L20 7M15 7h5v5"/>',
+    note: '<path d="M6 4.5h12a1.5 1.5 0 0 1 1.5 1.5v9.5L14.5 20.5H6A1.5 1.5 0 0 1 4.5 19V6A1.5 1.5 0 0 1 6 4.5zM14.5 20.5v-4a1 1 0 0 1 1-1h4M8 9h8M8 12.5h5"/>',
+    print: '<path d="M7 9V4.5h10V9M7 17H5a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 5 9h14a1.5 1.5 0 0 1 1.5 1.5v5A1.5 1.5 0 0 1 19 17h-2M7 14h10v6H7z"/>'
   };
 
   function icon(name) {
@@ -57,6 +60,7 @@
     month: { y: p0.y, m: p0.m },
     year: p0.y,
     yearMode: window.innerWidth >= 900 ? 'table' : 'months',
+    analysisPeriod: 'd90',
     version: 0,
     sync: { state: 'off', lastSync: 0, error: '', code: '' },
     storageOk: true,
@@ -122,7 +126,7 @@
    * Zapisuje dzień (kwota albo „zamknięte”). Zwraca Promise<boolean> – czy zapisano.
    * ui.hintEl – element, w którym pokazać błąd walidacji.
    */
-  function submitDay(key, text, closed, ui) {
+  function submitDay(key, text, closed, ui, note) {
     var today = C.todayKey();
     if (!C.parseKey(key) || key > today) {
       showToast('Nie można wpisać utargu za przyszły dzień.', { kind: 'error' });
@@ -142,9 +146,10 @@
     return guard.then(function (go) {
       if (!go) return false;
       var prev = C.getDay(state.data, key);
-      var before = prev ? { a: prev.a, c: prev.c } : null;
+      var before = prev ? { a: prev.a, c: prev.c, n: prev.n || '' } : null;
+      var noteVal = note === undefined ? (prev && prev.n ? prev.n : '') : note;
       try {
-        commit(C.setDay(state.data, key, amount, closed, Date.now()));
+        commit(C.setDay(state.data, key, amount, closed, Date.now(), noteVal));
       } catch (e) {
         showToast('Nie udało się zapisać. Spróbuj ponownie.', { kind: 'error' });
         return false;
@@ -158,7 +163,7 @@
   }
 
   function restoreDay(key, before) {
-    commit(C.setDay(state.data, key, before ? before.a : null, before ? before.c : false, Date.now()));
+    commit(C.setDay(state.data, key, before ? before.a : null, before ? before.c : false, Date.now(), before ? before.n : ''));
     showToast('Cofnięto zmianę');
     refresh(true);
   }
@@ -166,7 +171,7 @@
   function clearDay(key) {
     var prev = C.getDay(state.data, key);
     if (!prev) return;
-    var before = { a: prev.a, c: prev.c };
+    var before = { a: prev.a, c: prev.c, n: prev.n || '' };
     commit(C.setDay(state.data, key, null, false, Date.now()));
     showToast('Wpis usunięty', { undo: function () { restoreDay(key, before); } });
     refresh(true);
@@ -205,6 +210,7 @@
     { view: 'today', label: 'Dziś', icon: 'wallet' },
     { view: 'month', label: 'Miesiąc', icon: 'calendar' },
     { view: 'year', label: 'Rok', icon: 'bars' },
+    { view: 'analysis', label: 'Analiza', icon: 'trend' },
     { view: 'settings', label: 'Ustawienia', icon: 'sliders' }
   ];
 
@@ -308,6 +314,13 @@
       'Wpisz kwotę albo oznacz dzień jako zamknięty, żeby sumy były kompletne.<div class="chips">' + chips + '</div></div></div>';
   }
 
+  /** Subtelna notatka pod kwotą: pojawia się dopiero, gdy dzień jest zapisany. */
+  function heroNote(rec, key) {
+    if (!rec) return '';
+    return '<div class="hero-extra">' + (rec.n ? '<span class="hero-note">' + esc(rec.n) + '</span>' : '') +
+      '<button class="hero-link" data-action="open-editor" data-key="' + key + '">' + icon('note') + (rec.n ? 'Zmień notatkę' : 'Dodaj notatkę') + '</button></div>';
+  }
+
   function todayView() {
     var key = state.sel;
     var today = state.today;
@@ -337,6 +350,7 @@
       h += '<div class="closed-state">' + icon('moon') + 'Sklep zamknięty</div>';
       h += '<p class="hero-hint">Ten dzień liczy się jako 0,00 zł.</p>';
       h += '<div class="hero-actions"><button class="btn primary" data-action="today-reopen">Wpisz utarg</button></div>';
+      h += heroNote(rec, key);
     } else {
       h += '<div class="amount-row"><input id="amount-input" class="amount-input" type="text" inputmode="decimal" autocomplete="off" ' +
         'autocapitalize="off" spellcheck="false" enterkeyhint="done" placeholder="0,00" aria-label="Kwota utargu w złotych" ' +
@@ -344,6 +358,7 @@
       h += '<p class="hero-hint" id="hint">' + (rec ? 'Zapisano: ' + C.formatMoney(rec.a) : 'Wpisz kwotę po zamknięciu sklepu.') + '</p>';
       h += '<div class="hero-actions"><button class="btn primary" data-action="today-save">' + icon('check') + (rec ? 'Zapisz zmianę' : 'Zapisz utarg') + '</button>' +
         '<button class="btn glass" data-action="today-closed">' + icon('moon') + 'Zamknięte</button></div>';
+      h += heroNote(rec, key);
     }
     h += '</section>';
 
@@ -365,7 +380,7 @@
       h += '<div class="list"><div class="empty"><b>Zacznij od pierwszego wpisu</b>Wpisz dzisiejszy utarg powyżej. Sumy miesięczne i roczne policzą się same.</div></div>';
     } else {
       h += '<div class="list">' + recent.map(function (e) {
-        return '<button class="row" data-action="open-editor" data-key="' + e.key + '"><div class="mid"><b>' + esc(dayLabel(e.key)) + '</b></div>' +
+        return '<button class="row" data-action="open-editor" data-key="' + e.key + '"><div class="mid"><b>' + esc(dayLabel(e.key)) + '</b>' + (e.rec.n ? '<span class="note">' + esc(e.rec.n) + '</span>' : '') + '</div>' +
           (e.rec.c ? '<span class="tag closed">' + icon('moon') + 'Zamknięte</span>' : '<div class="amt num">' + C.formatMoney(e.rec.a) + '</div>') + '</button>';
       }).join('') + '</div>';
     }
@@ -423,6 +438,7 @@
       var mid = '<div class="mid"></div>';
       var right = '';
       if (rec) {
+        if (rec.n) mid = '<div class="mid"><span class="note">' + esc(rec.n) + '</span></div>';
         if (rec.c) right = '<span class="tag closed">' + icon('moon') + 'Zamknięte</span>';
         else right = '<div class="amt num">' + C.formatMoney(rec.a) + '</div>';
       } else if (key >= o.since && C.isStandingClosed(key, state.settings.closedWeekdays)) {
@@ -438,7 +454,7 @@
       h += '<button class="' + cls + '" data-action="open-editor" data-key="' + key + '" aria-label="' + esc(cap(C.longDate(key))) + '">' + dh + mid + right + '</button>';
     }
     h += '<div class="row total"><div class="d"></div><div class="mid">Suma — ' + C.MONTHS[m] + '</div><div class="amt num">' + C.formatMoney(ms.total) + '</div></div>';
-    h += '</div></div>';
+    h += '</div>' + printButton('print-month') + '</div>';
     return h;
   }
 
@@ -541,7 +557,7 @@
       });
       h += '<div class="row total"><div class="mid">Razem — rok ' + y + '</div><div class="amt num">' + C.formatMoney(ys.total) + '</div></div></div>';
     }
-    h += '</div>';
+    h += printButton('print-year') + '</div>';
     return h;
   }
 
@@ -608,13 +624,13 @@
     var list = Object.keys(years).sort().reverse().slice(0, 4);
     if (!list.length) list = [String(state.today.slice(0, 4))];
     var n = C.countEntries(state.data);
-    var h = '<div class="card"><h2>Twoje dane</h2><p class="help">Zapisanych wpisów: <b>' + n + '</b>. Plik kopii możesz przechowywać dodatkowo na dysku lub w poczcie.</p>' +
+    var h = '<div class="card"><h2>Twoje dane</h2><p class="help">Zapisanych wpisów: <b>' + n + '</b>. Plik kopii możesz przechowywać dodatkowo na dysku lub w poczcie. „Wczytaj z pliku” przyjmuje kopię (JSON) oraz historię z CSV: tabelę wyeksportowaną stąd albo listę „data;kwota” (np. z Excela). Istniejące wpisy nie są nadpisywane.</p>' +
       '<div class="btn-row"><button class="btn" data-action="export-json">' + icon('download') + 'Pobierz kopię (JSON)</button>' +
       '<button class="btn" data-action="import-pick">' + icon('upload') + 'Wczytaj z pliku</button></div>' +
       '<div class="btn-row">' + list.map(function (y) {
         return '<button class="btn small" data-action="export-csv" data-y="' + y + '">' + icon('download') + 'Tabela ' + y + ' (CSV)</button>';
       }).join('') + '</div>' +
-      '<input id="import-file" class="hidden-file" type="file" accept=".json,application/json" tabindex="-1" aria-hidden="true"></div>';
+      '<input id="import-file" class="hidden-file" type="file" accept=".json,.csv,application/json,text/csv,text/plain" tabindex="-1" aria-hidden="true"></div>';
     return h;
   }
 
@@ -632,6 +648,9 @@
       '<div class="chips">' + order.map(function (d) {
         return '<button class="chip" data-action="weekday" data-d="' + d + '" aria-pressed="' + (st.closedWeekdays.indexOf(d) >= 0) + '">' + cap(C.WEEKDAYS[d]) + '</button>';
       }).join('') + '</div></div>';
+    h += '<div class="card" id="cost-card"><h2>Koszt otwarcia sklepu</h2><p class="help">Opcjonalnie. Dzienny koszt, poniżej którego otwarcie się nie opłaca (np. prąd, ogrzewanie, pensja). Analiza pokaże wtedy dni i okoliczności z utargiem niższym niż ten koszt.</p>' +
+      '<div class="amount-field plain"><input id="cost-input" class="input" type="text" inputmode="decimal" autocomplete="off" placeholder="np. 300 (puste = wyłączone)" aria-label="Dzienny koszt otwarcia w złotych" value="' + (st.openCost ? esc(C.toInputString(st.openCost)) : '') + '"><span class="amount-cur" aria-hidden="true">zł</span></div>' +
+      '<p class="hero-hint err" id="cost-hint" role="alert"></p></div>';
     h += dataCard();
     h += installCard();
     h += '<div class="card"><h2>O aplikacji</h2><div class="kv"><div><span>Wersja</span><b>' + APP_VERSION + '</b></div>' +
@@ -640,7 +659,263 @@
     return h;
   }
 
-  var VIEWS = { today: todayView, month: monthView, year: yearView, settings: settingsView };
+  /* ---------- Analiza ---------- */
+
+  var PERIODS = [
+    { id: 'd30', label: '30 dni' },
+    { id: 'd90', label: '90 dni' },
+    { id: 'y', label: 'Ten rok' },
+    { id: 'all', label: 'Wszystko' }
+  ];
+
+  function analysisFrom() {
+    var t = state.today;
+    switch (state.analysisPeriod) {
+      case 'd30': return C.addDays(t, -29);
+      case 'd90': return C.addDays(t, -89);
+      case 'y': return t.slice(0, 4) + '-01-01';
+      default: return null;
+    }
+  }
+
+  /** Złote bez groszy do podpisów na wykresach: 123450 → "1 235". */
+  function zlShort(g) { return C.formatGrosze(Math.round(g / 100) * 100).split(',')[0]; }
+
+  /**
+   * Wykres słupkowy w SVG (bez stylów inline – tylko klasy i atrybuty prezentacyjne).
+   * items: [{ label, value, cls }], o: { cost, values }.
+   */
+  function barsSvg(items, o) {
+    o = o || {};
+    var W = 360, base = 150, maxH = 118;
+    var max = 0;
+    items.forEach(function (it) { if (it.value > max) max = it.value; });
+    if (o.cost > max) max = o.cost;
+    var n = items.length;
+    var slot = (W - 12) / n;
+    var bw = Math.min(30, Math.round(slot * 0.62));
+    var svg = '<svg class="chart static" viewBox="0 0 360 180" role="img" aria-label="' + esc(o.aria || 'Wykres') + '">';
+    svg += '<line class="base" x1="6" y1="' + base + '" x2="354" y2="' + base + '"/>';
+    items.forEach(function (it, i) {
+      var x = Math.round(6 + i * slot + (slot - bw) / 2);
+      var hgt = it.value > 0 && max > 0 ? Math.max(4, Math.round(it.value / max * maxH)) : 0;
+      if (hgt === 0) svg += '<rect class="bar" x="' + x + '" y="147" width="' + bw + '" height="3" rx="1.5"/>';
+      else svg += '<rect class="' + (it.cls || 'bar on') + '" x="' + x + '" y="' + (base - hgt) + '" width="' + bw + '" height="' + hgt + '" rx="5"/>';
+      if (o.values && it.value > 0) svg += '<text class="val" x="' + (x + bw / 2) + '" y="' + (base - hgt - 5) + '" text-anchor="middle">' + zlShort(it.value) + '</text>';
+      svg += '<text x="' + (x + bw / 2) + '" y="170" text-anchor="middle">' + esc(it.label) + '</text>';
+    });
+    if (o.cost > 0 && max > 0) {
+      var cy = base - Math.round(o.cost / max * maxH);
+      svg += '<line class="cost" x1="6" y1="' + cy + '" x2="354" y2="' + cy + '"/>';
+    }
+    return svg + '</svg>';
+  }
+
+  function deltaHtml(now, before) {
+    var p = C.pctChange(now, before);
+    if (p === null) return '';
+    if (p === 0) return '<span class="delta">bez zmian</span>';
+    return '<span class="delta ' + (p > 0 ? 'up' : 'down') + '">' + (p > 0 ? '+' : '−') + Math.abs(p) + '%</span>';
+  }
+
+  function dayRow(e) {
+    return '<button class="row" data-action="open-editor" data-key="' + e.key + '"><div class="mid"><b>' + esc(dayLabel(e.key)) + '</b>' +
+      (e.n ? '<span class="note">' + esc(e.n) + '</span>' : '') + '</div><div class="amt num">' + C.formatMoney(e.a) + '</div></button>';
+  }
+
+  function analysisView() {
+    var today = state.today;
+    var cost = state.settings.openCost || 0;
+    var an = C.analyze(state.data, { today: today, from: analysisFrom(), openCost: cost });
+    var h = '<div class="page-head"><div><h1>Analiza</h1><p>Wnioski z Twoich wpisów.</p></div></div><div class="stack">';
+
+    h += '<div class="seg full" role="group" aria-label="Okres analizy">' + PERIODS.map(function (p) {
+      return '<button data-action="analysis-period" data-period="' + p.id + '" aria-pressed="' + (state.analysisPeriod === p.id) + '">' + p.label + '</button>';
+    }).join('') + '</div>';
+
+    if (!an.openDays) {
+      h += '<div class="card"><div class="empty"><b>Brak danych w tym okresie</b>Wpisz utarg za kilka dni albo wybierz dłuższy okres. Wnioski pojawią się po co najmniej 7 dniach z utargiem.</div></div></div>';
+      return h;
+    }
+
+    h += '<div class="grid2">' +
+      '<div class="metric"><div class="k">Średnio dziennie</div><div class="v num">' + C.formatMoney(an.avg) + '</div><div class="s">' + an.openDays + ' ' + daysWord(an.openDays) + ' z utargiem</div></div>' +
+      '<div class="metric gold"><div class="k">Suma w okresie</div><div class="v num">' + C.formatMoney(an.total) + '</div><div class="s">' + an.closedDays + ' ' + C.plural(an.closedDays, 'dzień zamknięty', 'dni zamknięte', 'dni zamkniętych') + '</div></div></div>';
+
+    // Wnioski
+    var ins = C.insights(an);
+    h += '<div class="card"><h2>Wnioski</h2>';
+    if (an.openDays < 7) {
+      h += '<p class="help">Wnioski pojawią się po wpisaniu co najmniej 7 dni z utargiem (masz ' + an.openDays + '). Do tego czasu liczby poniżej są tylko poglądowe.</p>';
+    } else if (!ins.length) {
+      h += '<p class="help">Na razie nie widać wyraźnych zależności. Dodawaj krótkie notatki do dni (np. „deszcz”), a pokażę ich wpływ na utarg.</p>';
+    } else {
+      h += '<ul class="insights">' + ins.map(function (t) { return '<li>' + icon('info') + '<span>' + esc(t) + '</span></li>'; }).join('') + '</ul>';
+    }
+    h += '</div>';
+
+    // Dni tygodnia
+    var order = [1, 2, 3, 4, 5, 6, 0];
+    var maxAvg = 0;
+    an.weekdays.forEach(function (x) { if (x.avg > maxAvg) maxAvg = x.avg; });
+    var items = order.map(function (d) {
+      var x = an.weekdays[d];
+      var cls = 'bar on';
+      if (x.n && cost && x.avg < cost) cls = 'bar low';
+      else if (x.n && x.avg === maxAvg) cls = 'bar best';
+      return { label: cap(C.WEEKDAYS_SHORT[d]), value: x.avg, cls: cls };
+    });
+    h += '<div class="card"><h2>Średni utarg według dnia tygodnia</h2><div class="chart-box">' +
+      barsSvg(items, { cost: cost, values: true, aria: 'Średni utarg w kolejne dni tygodnia' }) + '</div>';
+    h += '<p class="help">Liczone z dni z utargiem. ' + (cost ? 'Przerywana linia to koszt otwarcia, czerwone słupki są poniżej niego.' : '') + '</p>';
+    var closedByDay = order.filter(function (d) { return an.weekdays[d].closed > 0; }).map(function (d) {
+      return cap(C.WEEKDAYS_SHORT[d]) + ': ' + an.weekdays[d].closed;
+    });
+    if (closedByDay.length) h += '<p class="help">Dni zamknięte według dnia tygodnia – ' + esc(closedByDay.join(', ')) + '.</p>';
+    h += '</div>';
+
+    // Najlepsze i najsłabsze
+    if (an.best.length) {
+      h += '<div><h2 class="section-title">Najlepsze dni</h2><div class="list">' + an.best.map(dayRow).join('') + '</div></div>';
+    }
+    if (an.worst.length) {
+      h += '<div><h2 class="section-title">Najsłabsze dni</h2><div class="list">' + an.worst.map(dayRow).join('') + '</div></div>';
+    }
+
+    // Porównanie
+    var cmp = C.compareMonths(state.data, today);
+    h += '<div class="card"><h2>Ten miesiąc na tle poprzednich</h2><p class="help">Porównanie do tego samego dnia miesiąca (1–' + cmp.day + '), żeby było uczciwe.</p>';
+    h += '<div class="cmp-row"><span>' + cap(C.MONTHS[cmp.cur.m]) + ' ' + cmp.cur.y + '</span><b class="num">' + C.formatMoney(cmp.cur.total) + '</b></div>';
+    h += '<div class="cmp-row"><span>' + cap(C.MONTHS[cmp.prev.m]) + ' ' + cmp.prev.y + '</span><span><b class="num">' + C.formatMoney(cmp.prev.total) + '</b> ' + deltaHtml(cmp.cur.total, cmp.prev.total) + '</span></div>';
+    h += '<div class="cmp-row"><span>' + cap(C.MONTHS[cmp.lastYear.m]) + ' ' + cmp.lastYear.y + '</span><span><b class="num">' + C.formatMoney(cmp.lastYear.total) + '</b> ' + deltaHtml(cmp.cur.total, cmp.lastYear.total) + '</span></div>';
+    h += '<p class="help">Zmiana dotyczy bieżącego miesiąca względem wiersza.</p></div>';
+
+    // Trend
+    var tr = C.trendMonths(state.data, today, 12);
+    var trMax = 0;
+    tr.forEach(function (x) { if (x.total > trMax) trMax = x.total; });
+    h += '<div class="card"><h2>Ostatnie 12 miesięcy</h2><div class="chart-box">' + barsSvg(tr.map(function (x, i) {
+      return { label: C.MONTHS_SHORT[x.m], value: x.total, cls: x.total === trMax && trMax > 0 ? 'bar best' : (i === tr.length - 1 ? 'bar now' : 'bar on') };
+    }), { aria: 'Utarg w ostatnich 12 miesiącach' }) + '</div></div>';
+
+    // Okoliczności
+    h += '<div class="card"><h2>Okoliczności z notatek</h2>';
+    if (!an.tags.length) {
+      h += '<p class="help">Dodawaj do dni krótkie notatki (np. „deszcz”, „upał”, „promocja”, „święto”). Tutaj zobaczysz, jak wpływają na utarg i czy w takie dni opłaca się otwierać.</p>';
+    } else {
+      h += '<table class="mini-table"><thead><tr><th scope="col">Okoliczność</th><th scope="col">Dni</th><th scope="col">Średnio</th><th scope="col">Względem reszty</th></tr></thead><tbody>';
+      an.tags.forEach(function (t) {
+        var d = t.diffPct === null ? '—' : (t.diffPct > 0 ? '+' : (t.diffPct < 0 ? '−' : '')) + Math.abs(t.diffPct) + '%';
+        var cls = t.diffPct === null || t.diffPct === 0 ? '' : (t.diffPct > 0 ? 'delta up' : 'delta down');
+        var low = cost && t.n && t.avg < cost ? ' low' : '';
+        h += '<tr><th scope="row">' + esc(t.label) + (t.closed ? '<span class="sub-note">zamknięte: ' + t.closed + '</span>' : '') + '</th><td class="num">' + t.n + '</td><td class="num' + low + '">' + (t.n ? C.formatMoney(t.avg) : '—') + '</td><td class="num ' + cls + '">' + d + '</td></tr>';
+      });
+      h += '</tbody></table><p class="help">Porównanie średniego utargu w dni z daną notatką do pozostałych dni z utargiem. Przy małej liczbie dni to tylko wskazówka.</p>';
+    }
+    h += '</div>';
+
+    // Koszt otwarcia
+    if (!cost) {
+      h += '<div class="banner info">' + icon('info') + '<div class="grow"><strong>Czy otwarcie się opłaca?</strong>Podaj dzienny koszt otwarcia sklepu (np. prąd, ogrzewanie, pensja), a pokażę dni i okoliczności, w których utarg jest niższy.' +
+        '<div class="btn-row"><button class="btn small" data-action="goto-cost">Ustaw koszt otwarcia</button></div></div></div>';
+    } else {
+      h += '<p class="help center">Dzienny koszt otwarcia: <b>' + C.formatMoney(cost) + '</b>. <button class="linkish" data-action="goto-cost">Zmień</button></p>';
+    }
+    return h + '</div>';
+  }
+
+  /* ---------- Raporty do druku ---------- */
+
+  function todayPl() {
+    var p = C.parseKey(state.today);
+    return p.d + '.' + ('0' + (p.m + 1)).slice(-2) + '.' + p.y;
+  }
+
+  function reportHead(title, sub) {
+    return '<header class="rp-head"><div class="rp-brand">Utarg</div><div><h1>' + esc(title) + '</h1><p>' + esc(sub) + '</p></div></header>';
+  }
+
+  function monthReport(y, m) {
+    var o = statOpts();
+    var ms = C.monthStats(state.data, y, m, o);
+    var today = state.today;
+    var h = '<div class="report">' + reportHead('Raport miesięczny – ' + cap(C.MONTHS[m]) + ' ' + y, 'Wygenerowano ' + todayPl());
+    h += '<div class="rp-sum"><div><span>Suma miesiąca</span><b>' + C.formatMoney(ms.total) + '</b></div>' +
+      '<div><span>Dni z utargiem</span><b>' + ms.open + '</b></div>' +
+      '<div><span>Dni zamknięte</span><b>' + ms.closed + '</b></div>' +
+      '<div><span>Średnio dziennie</span><b>' + C.formatMoney(ms.avg) + '</b></div>' +
+      '<div><span>Najlepszy dzień</span><b>' + (ms.best ? ms.best.key.slice(8).replace(/^0/, '') + '. – ' + C.formatMoney(ms.best.a) : '—') + '</b></div></div>';
+    h += '<table class="rp-table"><thead><tr><th>Dzień</th><th></th><th class="r">Utarg</th><th>Notatka</th></tr></thead><tbody>';
+    for (var d = 1; d <= ms.days; d++) {
+      var key = C.dateKey(y, m, d);
+      var rec = C.getDay(state.data, key);
+      var wd = C.weekday(y, m, d);
+      var amt = '', note = rec && rec.n ? esc(rec.n) : '', cls = '';
+      if (key > today) { amt = ''; }
+      else if (rec) amt = rec.c ? 'zamknięte' : C.formatMoney(rec.a);
+      else if (key >= o.since && C.isStandingClosed(key, state.settings.closedWeekdays)) { amt = 'dzień wolny'; cls = 'muted'; }
+      else if (key >= o.since) { amt = 'brak wpisu'; cls = 'miss'; }
+      else amt = '—';
+      h += '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td>' + d + '</td><td>' + C.WEEKDAYS_SHORT[wd] + '</td><td class="r">' + amt + '</td><td>' + note + '</td></tr>';
+    }
+    h += '</tbody><tfoot><tr><td colspan="2">Suma</td><td class="r">' + C.formatMoney(ms.total) + '</td><td></td></tr></tfoot></table></div>';
+    return h;
+  }
+
+  function yearReport(y) {
+    var o = statOpts();
+    var ys = C.yearStats(state.data, y, o);
+    var h = '<div class="report">' + reportHead('Raport roczny – ' + y, 'Wygenerowano ' + todayPl());
+    var best = ys.bestMonth >= 0 ? ys.months[ys.bestMonth] : null;
+    h += '<div class="rp-sum"><div><span>Suma roczna</span><b>' + C.formatMoney(ys.total) + '</b></div>' +
+      '<div><span>Dni z utargiem</span><b>' + ys.open + '</b></div>' +
+      '<div><span>Dni zamknięte</span><b>' + ys.closed + '</b></div>' +
+      '<div><span>Średnio dziennie</span><b>' + C.formatMoney(ys.avg) + '</b></div>' +
+      '<div><span>Najlepszy miesiąc</span><b>' + (best ? cap(C.MONTHS[best.m]) + ' – ' + C.formatMoney(best.total) : '—') + '</b></div></div>';
+    h += '<table class="rp-table"><thead><tr><th>Miesiąc</th><th class="r">Dni z utargiem</th><th class="r">Zamknięte</th><th class="r">Brak wpisu</th><th class="r">Średnio dziennie</th><th class="r">Suma</th></tr></thead><tbody>';
+    ys.months.forEach(function (s) {
+      h += '<tr><td>' + cap(C.MONTHS[s.m]) + '</td><td class="r">' + s.open + '</td><td class="r">' + s.closed + '</td><td class="r">' + (s.missing.length || '') + '</td><td class="r">' + (s.open ? C.formatMoney(s.avg) : '') + '</td><td class="r">' + C.formatMoney(s.total) + '</td></tr>';
+    });
+    h += '</tbody><tfoot><tr><td>Razem</td><td class="r">' + ys.open + '</td><td class="r">' + ys.closed + '</td><td class="r">' + (ys.missing || '') + '</td><td class="r">' + (ys.open ? C.formatMoney(ys.avg) : '') + '</td><td class="r">' + C.formatMoney(ys.total) + '</td></tr></tfoot></table></div>';
+    return h;
+  }
+
+  function isIosStandalone() {
+    return window.navigator.standalone === true;
+  }
+
+  /** Drukuje raport (z niego można zapisać PDF). Na iPhonie w trybie aplikacji druk nie działa, więc pobierany jest plik. */
+  function printReport(html, title) {
+    if (isIosStandalone()) {
+      fetch('css/report.css').then(function (r) { return r.text(); }).then(function (css) {
+        var doc = '<!doctype html><html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
+          '<title>' + esc(title) + '</title><style>' + css + '</style></head><body class="doc">' + html +
+          '<p class="noprint">Aby zapisać PDF lub wydrukować: dotknij Udostępnij w Safari i wybierz Drukuj.</p></body></html>';
+        download(title.replace(/[^\wąćęłńóśźżĄĆĘŁŃÓŚŹŻ\-]+/g, '-') + '.html', doc, 'text/html');
+      }, function () { showToast('Nie udało się przygotować raportu.', { kind: 'error' }); });
+      return;
+    }
+    var root = $('print-root');
+    if (!root) return;
+    root.innerHTML = html;
+    document.body.classList.add('printing');
+    var prevTitle = document.title;
+    document.title = title;
+    var done = function () {
+      document.body.classList.remove('printing');
+      document.title = prevTitle;
+      root.innerHTML = '';
+      window.removeEventListener('afterprint', done);
+    };
+    window.addEventListener('afterprint', done);
+    try { window.print(); } catch (e) { done(); showToast('Drukowanie nie jest dostępne w tej przeglądarce.', { kind: 'error' }); }
+  }
+
+  function printButton(action) {
+    return '<div class="btn-row center"><button class="btn small" data-action="' + action + '">' + icon('print') + 'Drukuj / zapisz jako PDF</button></div>';
+  }
+
+  var VIEWS = { today: todayView, month: monthView, year: yearView, analysis: analysisView, settings: settingsView };
 
   /* ---------- Rysowanie ---------- */
 
@@ -709,6 +984,40 @@
     if (lastFocus && document.body.contains(lastFocus)) { try { lastFocus.focus(); } catch (e) { /* ignoruj */ } }
   }
 
+  function noteChips(note) {
+    var active = C.tagsOf(note);
+    return C.TAGS.map(function (t) {
+      return '<button type="button" class="chip tiny" data-action="note-tag" data-tag="' + t.id + '" aria-pressed="' + (active.indexOf(t.id) >= 0) + '">' + t.label + '</button>';
+    }).join('');
+  }
+
+  function noteField(note) {
+    return '<div class="note-field"><label for="ed-note">Notatka (opcjonalnie)</label>' +
+      '<input id="ed-note" class="input" type="text" maxlength="' + C.NOTE_MAX + '" autocomplete="off" placeholder="np. deszcz, promocja" value="' + esc(note) + '">' +
+      '<div class="chips" id="ed-tags">' + noteChips(note) + '</div></div>';
+  }
+
+  /** Dodaje albo usuwa z notatki wybraną okoliczność (np. „Deszcz”). */
+  function toggleNoteTag(id) {
+    var inp = $('ed-note');
+    if (!inp) return;
+    var tag = C.TAGS.filter(function (t) { return t.id === id; })[0];
+    if (!tag) return;
+    var parts = inp.value.split(/[,;]/).map(function (p) { return p.trim(); }).filter(Boolean);
+    if (C.tagsOf(inp.value).indexOf(id) >= 0) {
+      parts = parts.filter(function (p) { return C.tagsOf(p).indexOf(id) < 0; });
+    } else {
+      parts.push(tag.label.toLowerCase());
+    }
+    inp.value = C.normalizeNote(parts.join(', '));
+    syncNoteChips();
+  }
+
+  function syncNoteChips() {
+    var inp = $('ed-note'), box = $('ed-tags');
+    if (inp && box) box.innerHTML = noteChips(inp.value);
+  }
+
   function renderModal() {
     var root = $('modal-root');
     if (!state.editor) { root.innerHTML = ''; return; }
@@ -722,6 +1031,7 @@
       'enterkeyhint="done" placeholder="0,00" aria-label="Kwota utargu w złotych" value="' + (rec && !rec.c ? esc(C.toInputString(rec.a)) : '') + '"' + (e.closed ? ' disabled' : '') + '>' +
       '<span class="amount-cur" aria-hidden="true">zł</span></div>' +
       '<p class="hero-hint" id="ed-hint">' + (e.closed ? 'Ten dzień będzie liczył się jako 0,00 zł.' : '') + '</p>' +
+      noteField(rec ? rec.n || '' : '') +
       '<div class="switch-row"><div><b>Sklep zamknięty</b><span>Dzień liczy się jako 0,00 zł i nie ma braku wpisu.</span></div>' +
       '<label class="switch"><input id="ed-closed" type="checkbox" role="switch" aria-label="Sklep zamknięty"' + (e.closed ? ' checked' : '') + '><i></i></label></div>' +
       '<div class="actions"><button class="btn primary block" data-action="editor-save">' + icon('check') + 'Zapisz</button>' +
@@ -734,7 +1044,7 @@
     var e = state.editor;
     if (!e) return;
     var closed = $('ed-closed').checked;
-    submitDay(e.key, $('ed-amount').value, closed, { hintEl: $('ed-hint'), inputEl: $('ed-amount') }).then(function (ok) {
+    submitDay(e.key, $('ed-amount').value, closed, { hintEl: $('ed-hint'), inputEl: $('ed-amount') }, $('ed-note') ? $('ed-note').value : undefined).then(function (ok) {
       if (ok) closeEditor();
     });
   }
@@ -817,12 +1127,42 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
   }
 
+  /** Wczytuje historię z pliku CSV. Istniejące wpisy nie są nadpisywane. */
+  function importCsv(text, name) {
+    var ym = /(20\d{2}|19\d{2})/.exec(name);
+    var r = C.parseCsvImport(text, { today: C.todayKey(), year: ym ? +ym[1] : null });
+    if (r.error === 'year') {
+      showToast('Nie udało się ustalić roku tabeli. Dopisz rok do nazwy pliku, np. utarg-2025.csv.', { kind: 'error' });
+      return;
+    }
+    if (!r.entries.length) {
+      showToast(r.skipped.length ? 'Nie znaleziono poprawnych wpisów. ' + r.skipped[0].reason : 'To nie wygląda na plik z historią utargu.', { kind: 'error' });
+      return;
+    }
+    var out = C.addEntries(state.data, r.entries, Date.now());
+    if (!out.added) { showToast('Wszystkie dni z pliku już mają wpis.'); return; }
+    var info = 'Nowych dni do dodania: ' + out.added + '.';
+    if (out.existing) info += ' Pominięto dni, które już mają wpis: ' + out.existing + '.';
+    if (r.skipped.length) {
+      info += ' Nie wczytano wierszy: ' + r.skipped.length + ' (' + r.skipped.slice(0, 2).map(function (x) { return (x.line ? 'wiersz ' + x.line + ': ' : '') + x.reason; }).join('; ') + (r.skipped.length > 2 ? '…' : '') + ').';
+    }
+    confirmDialog({ title: 'Wczytać historię z CSV?', text: info, ok: 'Wczytaj', cancel: 'Anuluj' }).then(function (yes) {
+      if (!yes) return;
+      var again = C.addEntries(state.data, r.entries, Date.now());
+      commit(again.data);
+      showToast('Wczytano ' + again.added + ' ' + C.plural(again.added, 'dzień', 'dni', 'dni'));
+      refresh(true);
+    });
+  }
+
   function importFile(file) {
     if (!file) return;
     var reader = new FileReader();
     reader.onerror = function () { showToast('Nie udało się odczytać pliku.', { kind: 'error' }); };
     reader.onload = function () {
-      var parsed = C.parseSerialized(String(reader.result));
+      var raw = String(reader.result);
+      if (/\.csv$/i.test(file.name || '') || !/^\s*\{/.test(raw.replace(/^\ufeff/, ''))) { importCsv(raw, file.name || ''); return; }
+      var parsed = C.parseSerialized(raw);
       if (parsed.error || C.countEntries(parsed.data) + Object.keys(parsed.data.days).length === 0) {
         showToast('To nie jest plik kopii Utarg.', { kind: 'error' });
         return;
@@ -1019,6 +1359,18 @@
         refresh(true);
         break;
       }
+      case 'analysis-period': state.analysisPeriod = el.getAttribute('data-period'); refresh(true); break;
+      case 'goto-cost': {
+        go('settings');
+        var cc = $('cost-card');
+        if (cc && cc.scrollIntoView) cc.scrollIntoView({ block: 'center' });
+        var ci = $('cost-input');
+        if (ci) ci.focus();
+        break;
+      }
+      case 'note-tag': toggleNoteTag(el.getAttribute('data-tag')); break;
+      case 'print-month': printReport(monthReport(state.month.y, state.month.m), 'Utarg-' + state.month.y + '-' + ('0' + (state.month.m + 1)).slice(-2)); break;
+      case 'print-year': printReport(yearReport(state.year), 'Utarg-' + state.year); break;
       case 'sync-connect': connect(); break;
       case 'sync-now': Store.setDirty(true); Sync.run(); break;
       case 'sync-disconnect':
@@ -1048,6 +1400,23 @@
     }
   }
 
+  function saveCost(text) {
+    var hint = $('cost-hint');
+    if (!text.trim()) {
+      state.settings.openCost = 0;
+      Store.saveSettings(state.settings);
+      setHint(hint, '', false);
+      showToast('Koszt otwarcia wyłączony');
+      return;
+    }
+    var r = C.parseAmount(text);
+    if (!r.ok) { setHint(hint, r.error, true); return; }
+    state.settings.openCost = r.value;
+    Store.saveSettings(state.settings);
+    setHint(hint, '', false);
+    showToast('Zapisano koszt otwarcia: ' + C.formatMoney(r.value));
+  }
+
   function trapFocus(ev, root) {
     var f = root.querySelectorAll('button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])');
     if (!f.length) return;
@@ -1067,6 +1436,7 @@
 
     document.addEventListener('input', function (ev) {
       var t = ev.target;
+      if (t.id === 'ed-note') { syncNoteChips(); return; }
       if (t.id === 'amount-input' || t.id === 'ed-amount') {
         if (t.id === 'amount-input') state.typing = true;
         amountPreview(t);
@@ -1081,6 +1451,8 @@
         inp.disabled = t.checked;
         setHint($('ed-hint'), t.checked ? 'Ten dzień będzie liczył się jako 0,00 zł.' : '', false);
         if (!t.checked) inp.focus();
+      } else if (t.id === 'cost-input') {
+        saveCost(t.value);
       } else if (t.id === 'import-file') {
         importFile(t.files && t.files[0]);
         t.value = '';
@@ -1101,7 +1473,7 @@
       }
       if (ev.key === 'Enter' && !ev.isComposing) {
         if (t.id === 'amount-input') { ev.preventDefault(); handleAction(document.querySelector('[data-action="today-save"]'), ev); }
-        else if (t.id === 'ed-amount') { ev.preventDefault(); editorSave(); }
+        else if (t.id === 'ed-amount' || t.id === 'ed-note') { ev.preventDefault(); editorSave(); }
         else if (t.id === 'repo-input' || t.id === 'token-input') { ev.preventDefault(); connect(); }
       }
     });

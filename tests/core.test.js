@@ -391,7 +391,7 @@ test('eksport CSV roku', () => {
   assert.ok(lines[0].startsWith('Dzień;styczeń;luty;'));
   assert.equal(lines[1], '1;1000,50;1234567,89;;;;;;;;;;');
   assert.equal(lines[2], '2;0,50;;;;;;;;;;;');
-  assert.equal(lines[28], '28;;0,00;;;;;;;;;;');
+  assert.equal(lines[28], '28;;zamknięte;;;;;;;;;;');
   assert.equal(lines[31].split(';')[2], ''); // 31 lutego nie istnieje
   assert.equal(lines[32].split(';')[1], '1001,00');
   assert.equal(lines[33], 'Razem rok 2026;1235568,89'); // 100050 + 50 + 123456789 groszy

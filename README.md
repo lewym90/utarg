@@ -9,6 +9,11 @@ Prosta aplikacja do codziennego zapisywania utargu sklepu. Działa na iPhonie, A
 - **Rok**: 12 miesięcy w układzie tabeli (dni w wierszach, miesiące w kolumnach) z sumami miesięcznymi i **sumą roczną**, albo lista miesięcy z wykresem.
 - **Dni bez wpisu**: aplikacja ostrzega o pominiętych dniach. Dzień, w którym sklep był zamknięty, oznacza się jednym dotknięciem („Zamknięte”, liczy się jako 0,00 zł). W Ustawieniach można zaznaczyć stałe dni wolne (np. niedziela), wtedy nie ma żadnych przypomnień.
 - **Bezpieczeństwo danych**: zapis na urządzeniu (podwójny), kopia w GitHub po każdym wpisie, możliwość cofnięcia ostatniej zmiany, ostrzeżenie przy podejrzanie dużej kwocie (literówka), ręczny eksport JSON i CSV.
+- **Analiza**: średni utarg według dnia tygodnia, najlepsze i najsłabsze dni, porównanie bieżącego miesiąca z poprzednim i sprzed roku (do tego samego dnia miesiąca), trend z 12 miesięcy oraz gotowe wnioski słowne. Okresy: 30 dni, 90 dni, ten rok, wszystko.
+- **Notatki do dni** (opcjonalne, do 60 znaków): w oknie dnia pole „Notatka” i szybkie przyciski (deszcz, upał, śnieg, promocja, święto). Analiza porównuje średni utarg w dni z daną okolicznością z pozostałymi dniami, także dni zamknięte osobno.
+- **Koszt otwarcia** (Ustawienia, opcjonalnie): jeśli podasz dzienny koszt otwarcia sklepu, Analiza pokaże dni tygodnia i okoliczności z utargiem poniżej tego kosztu.
+- **Wczytywanie CSV**: „Wczytaj z pliku” przyjmuje kopię JSON oraz historię z CSV (tabela wyeksportowana z aplikacji albo lista `data;kwota[;notatka]` z Excela). Istniejące wpisy nie są nadpisywane, niejednoznaczne kwoty (np. `1.234`) są pomijane z komunikatem.
+- **Raport do druku / PDF**: przycisk na dole widoku Miesiąc i Rok. Na iPhonie w trybie aplikacji drukowanie przeglądarki nie działa, więc pobierany jest plik HTML do wydruku z Safari.
 - Wszystko po polsku, jasny i ciemny motyw (automatycznie lub ręcznie, zapamiętywany).
 
 ## Uruchomienie i publikacja
@@ -83,6 +88,7 @@ Jak to działa:
 ```
 index.html            szkielet aplikacji
 css/style.css         wygląd (jasny/ciemny motyw)
+css/report.css        wygląd raportów do druku
 js/core.js            logika: kwoty, daty, sumy, scalanie danych (bez DOM, testowana)
 js/store.js           zapis na urządzeniu (localStorage + IndexedDB)
 js/sync.js            kopia i synchronizacja z GitHub

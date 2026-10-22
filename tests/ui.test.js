@@ -75,7 +75,7 @@ test('start: widok „Dziś”, nawigacja po polsku, brak błędów', async () =
   assert.equal(doc.documentElement.lang, 'pl');
   assert.ok(q(doc, '#amount-input'), 'pole kwoty');
   const labels = [...doc.querySelectorAll('.tabbar .nav-btn')].map((b) => b.textContent.trim());
-  assert.deepEqual(labels, ['Dziś', 'Miesiąc', 'Rok', 'Ustawienia']);
+  assert.deepEqual(labels, ['Dziś', 'Miesiąc', 'Rok', 'Analiza', 'Ustawienia']);
   assert.equal(q(doc, '.tabbar [aria-current="page"]').textContent.trim(), 'Dziś');
   assert.match(text(doc, '#view'), /Zacznij od pierwszego wpisu/);
   assert.match(text(doc, '#view'), /Włącz kopię bezpieczeństwa/);
@@ -457,4 +457,188 @@ test('przeprowadzka: plik kopii z jednej instalacji wczytany w nowej, potem poł
   assert.equal(Core.countEntries(uploaded), 3);
   assert.equal(Core.getDay(uploaded, keys[2]).a, 250000);
   assert.deepEqual(fresh.errors, []);
+});
+
+async function seedDays(app, n) {
+  // n dni wstecz od wczoraj: poniedziałki–niedziele, kwoty rosnące; co czwarty dzień z deszczem
+  for (let i = 1; i <= n; i++) {
+    const key = Core.addDays(today, -i);
+    await app.w.__utarg.submitDay(key, String(1000 + i * 10), false, null, i % 4 === 0 ? 'deszcz' : '');
+  }
+}
+
+test('notatka: dodanie w oknie dnia, chipy, zapis, widok w miesiącu, zachowanie przy zmianie kwoty', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc, errors } = app;
+  typeInto(w, q(doc, '#amount-input'), '1500');
+  click(w, q(doc, '[data-action="today-save"]'));
+  await tick();
+  // subtelny link do notatki pojawia się dopiero po zapisie
+  click(w, q(doc, '.hero-link'));
+  await tick();
+  assert.ok(q(doc, '#ed-note'));
+  click(w, q(doc, '[data-action="note-tag"][data-tag="rain"]'));
+  assert.equal(q(doc, '#ed-note').value, 'deszcz');
+  assert.equal(q(doc, '[data-tag="rain"]').getAttribute('aria-pressed'), 'true');
+  click(w, q(doc, '[data-action="note-tag"][data-tag="promo"]'));
+  assert.equal(q(doc, '#ed-note').value, 'deszcz, promocja');
+  click(w, q(doc, '[data-action="note-tag"][data-tag="rain"]'));
+  assert.equal(q(doc, '#ed-note').value, 'promocja');
+  typeInto(w, q(doc, '#ed-note'), 'ulewa i wiatr');
+  assert.equal(q(doc, '[data-tag="rain"]').getAttribute('aria-pressed'), 'true');
+  click(w, q(doc, '[data-action="editor-save"]'));
+  await tick();
+  assert.equal(w.__utarg.state.data.days[today].n, 'ulewa i wiatr');
+  assert.equal(w.__utarg.state.data.days[today].a, 150000);
+  assert.match(text(doc, '.hero-note'), /ulewa i wiatr/);
+  // zmiana kwoty na ekranie głównym nie kasuje notatki
+  typeInto(w, q(doc, '#amount-input'), '1600');
+  click(w, q(doc, '[data-action="today-save"]'));
+  await tick();
+  assert.equal(w.__utarg.state.data.days[today].n, 'ulewa i wiatr');
+  // cofnięcie przywraca także notatkę
+  click(w, q(doc, '[data-action="toast-undo"]'));
+  await tick();
+  assert.equal(w.__utarg.state.data.days[today].a, 150000);
+  assert.equal(w.__utarg.state.data.days[today].n, 'ulewa i wiatr');
+  // notatka widoczna w kopii i w widoku miesiąca
+  assert.match(w.localStorage.getItem('utarg.data.v1'), /"n": "ulewa i wiatr"/);
+  click(w, q(doc, '.tabbar [data-view="month"]'));
+  assert.match(text(doc, '#view'), /ulewa i wiatr/);
+  assert.deepEqual(errors, []);
+});
+
+test('notatka: tekst z HTML jest wyświetlany bezpiecznie', async () => {
+  const app = boot();
+  await tick(60);
+  await app.w.__utarg.submitDay(today, '10', false, null, '<img src=x onerror=alert(1)>');
+  assert.equal(app.doc.querySelectorAll('#view img[src="x"]').length, 0);
+  assert.match(text(app.doc, '.hero-note'), /<img src=x/);
+});
+
+test('zakładka Analiza: puste dane, potem wnioski, okresy i wykresy', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc, errors } = app;
+  click(w, q(doc, '.tabbar [data-view="analysis"]'));
+  assert.equal(q(doc, '.tabbar [aria-current="page"]').textContent.trim(), 'Analiza');
+  assert.match(text(doc, '#view'), /Brak danych w tym okresie/);
+
+  await seedDays(app, 40);
+  click(w, q(doc, '.tabbar [data-view="analysis"]'));
+  const view = text(doc, '#view');
+  assert.match(view, /Średnio dziennie/);
+  assert.match(view, /Średni utarg według dnia tygodnia/);
+  assert.match(view, /Najlepsze dni/);
+  assert.match(view, /Najsłabsze dni/);
+  assert.match(view, /Okoliczności z notatek/);
+  assert.match(view, /Deszcz/);
+  assert.equal(doc.querySelectorAll('svg.chart').length, 2);
+  assert.equal(doc.querySelectorAll('.chart rect.bar').length >= 19, true);
+  assert.equal(q(doc, '[data-action="analysis-period"][aria-pressed="true"]').textContent, '90 dni');
+  click(w, q(doc, '[data-action="analysis-period"][data-period="d30"]'));
+  assert.equal(q(doc, '[data-action="analysis-period"][aria-pressed="true"]').textContent, '30 dni');
+  // liczby zgodne z logiką: 30 dni wstecz od wczoraj do dziś (okno 30 dni kończy się dziś)
+  const an = Core.analyze(w.__utarg.state.data, { today, from: Core.addDays(today, -29) });
+  assert.match(text(doc, '#view'), new RegExp(String(an.openDays) + ' (dzień|dni) z utargiem'));
+  // pasek z propozycją kosztu otwarcia
+  assert.match(text(doc, '#view'), /Czy otwarcie się opłaca/);
+  assert.equal(doc.querySelectorAll('[style]').length, 0, 'brak atrybutów style');
+  assert.deepEqual(errors, []);
+});
+
+test('koszt otwarcia: ustawienie, zapamiętanie, ostrzeżenia w analizie', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc, errors } = app;
+  await seedDays(app, 30); // kwoty 1010–1300 zł
+  click(w, q(doc, '.tabbar [data-view="settings"]'));
+  const inp = q(doc, '#cost-input');
+  inp.value = 'abc';
+  inp.dispatchEvent(new w.Event('change', { bubbles: true }));
+  assert.ok(q(doc, '#cost-hint').textContent.length > 0);
+  assert.equal(w.__utarg.state.settings.openCost || 0, 0);
+  q(doc, '#cost-input').value = '1 200,50';
+  q(doc, '#cost-input').dispatchEvent(new w.Event('change', { bubbles: true }));
+  assert.equal(w.__utarg.state.settings.openCost, 120050);
+  assert.match(w.localStorage.getItem('utarg.settings.v1'), /"openCost":120050/);
+  click(w, q(doc, '.tabbar [data-view="analysis"]'));
+  assert.match(text(doc, '#view'), /Dzienny koszt otwarcia: 1.200,50.zł/);
+  assert.match(text(doc, '#view'), /niższy niż koszt otwarcia|poniżej kosztu otwarcia/);
+  assert.ok(doc.querySelector('svg.chart .cost'), 'linia kosztu na wykresie');
+  // wyłączenie
+  click(w, q(doc, '.tabbar [data-view="settings"]'));
+  q(doc, '#cost-input').value = '';
+  q(doc, '#cost-input').dispatchEvent(new w.Event('change', { bubbles: true }));
+  assert.equal(w.__utarg.state.settings.openCost, 0);
+  assert.deepEqual(errors, []);
+});
+
+test('import CSV: lista z Excela wczytana z potwierdzeniem, istniejące wpisy nietknięte', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc, errors } = app;
+  const y = Core.addDays(today, -1), y2 = Core.addDays(today, -2), y3 = Core.addDays(today, -3);
+  await w.__utarg.submitDay(y, '500', false, null);
+  click(w, q(doc, '.tabbar [data-view="settings"]'));
+  const dmy = (k) => { const p = Core.parseKey(k); return `${p.d}.${p.m + 1}.${p.y}`; };
+  const csv = `Data;Utarg\n${dmy(y)};9999\n${dmy(y2)};1 234,50 zł\n${dmy(y3)};zamknięte\nzły wiersz;5\n`;
+  const input = q(doc, '#import-file');
+  Object.defineProperty(input, 'files', { value: [new w.File([csv], 'historia.csv', { type: 'text/csv' })], configurable: true });
+  input.dispatchEvent(new w.Event('change', { bubbles: true }));
+  await tick(100);
+  assert.match(text(doc, '#cf-text'), /Nowych dni do dodania: 2/);
+  assert.match(text(doc, '#cf-text'), /już mają wpis: 1/);
+  assert.match(text(doc, '#cf-text'), /Nie wczytano wierszy: 1/);
+  click(w, q(doc, '[data-action="confirm-yes"]'));
+  await tick(50);
+  const d = w.__utarg.state.data;
+  assert.equal(Core.getDay(d, y).a, 50000);
+  assert.equal(Core.getDay(d, y2).a, 123450);
+  assert.equal(Core.getDay(d, y3).c, true);
+  assert.deepEqual(errors, []);
+});
+
+test('import CSV: błędny plik daje komunikat zamiast zapisu', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc } = app;
+  click(w, q(doc, '.tabbar [data-view="settings"]'));
+  const input = q(doc, '#import-file');
+  Object.defineProperty(input, 'files', { value: [new w.File(['coś zupełnie innego\nbez dat'], 'x.csv', { type: 'text/csv' })], configurable: true });
+  input.dispatchEvent(new w.Event('change', { bubbles: true }));
+  await tick(100);
+  assert.match(text(doc, '#toasts'), /Nie znaleziono|nie wygląda/);
+  assert.equal(Object.keys(w.__utarg.state.data.days).length, 0);
+});
+
+test('raporty: miesięczny i roczny przygotowują treść do druku z poprawnymi sumami', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc, errors } = app;
+  await seedDays(app, 5);
+  let printed = 0;
+  w.print = () => { printed++; };
+  click(w, q(doc, '.tabbar [data-view="month"]'));
+  click(w, q(doc, '[data-action="print-month"]'));
+  assert.equal(printed, 1);
+  assert.ok(doc.body.classList.contains('printing'));
+  const rep = text(doc, '#print-root');
+  assert.match(rep, /Raport miesięczny/);
+  const ms = Core.monthStats(w.__utarg.state.data, tp.y, tp.m, { today });
+  assert.ok(rep.includes(Core.formatMoney(ms.total)), 'suma miesiąca w raporcie');
+  assert.equal(doc.querySelectorAll('#print-root .rp-table tbody tr').length, Core.daysInMonth(tp.y, tp.m));
+  w.dispatchEvent(new w.Event('afterprint'));
+  assert.equal(doc.body.classList.contains('printing'), false);
+  assert.equal(doc.getElementById('print-root').innerHTML, '');
+
+  click(w, q(doc, '.tabbar [data-view="year"]'));
+  click(w, q(doc, '[data-action="print-year"]'));
+  const yr = text(doc, '#print-root');
+  assert.match(yr, /Raport roczny/);
+  const ys = Core.yearStats(w.__utarg.state.data, tp.y, { today });
+  assert.ok(yr.includes(Core.formatMoney(ys.total)));
+  assert.equal(doc.querySelectorAll('#print-root .rp-table tbody tr').length, 12);
+  assert.deepEqual(errors, []);
 });
