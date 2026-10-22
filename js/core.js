@@ -211,6 +211,13 @@
    *  w jednym dniu może być wiele wydatków; a = null to znacznik usunięcia (jak wyżej).
    */
 
+  /** Składa obiekt danych (ustawienia cfg są opcjonalne). */
+  function pack(days, exp, cfg) {
+    var o = { v: 1, days: days, exp: exp || {} };
+    if (cfg) o.cfg = cfg;
+    return o;
+  }
+
   function emptyData() {
     return { v: 1, days: {}, exp: {} };
   }
@@ -251,7 +258,7 @@
     var days = {};
     Object.keys(data.days).forEach(function (k) { days[k] = data.days[k]; });
     days[key] = rec;
-    return { v: 1, days: days, exp: data.exp || {} };
+    return pack(days, data.exp, data.cfg);
   }
 
   /** Scala dwa zbiory danych. Dla każdego dnia wygrywa nowszy wpis. */
@@ -279,7 +286,11 @@
       else if (x.t !== y.t) exp[k] = x.t > y.t ? x : y;
       else exp[k] = expString(x) >= expString(y) ? x : y;
     });
-    return { v: 1, days: days, exp: exp };
+    var cfg = a.cfg || b.cfg;
+    if (a.cfg && b.cfg) {
+      cfg = a.cfg.t !== b.cfg.t ? (a.cfg.t > b.cfg.t ? a.cfg : b.cfg) : (cfgString(a.cfg) >= cfgString(b.cfg) ? a.cfg : b.cfg);
+    }
+    return pack(days, exp, cfg);
   }
 
   /**
@@ -287,6 +298,21 @@
    * Zwraca { data, dropped } – niepoprawne wpisy są pomijane i zliczane.
    */
   var EXP_ID = /^[A-Za-z0-9_-]{1,40}$/;
+
+  function cfgString(c) { return c.w.join(',') + '|' + c.c + '|' + c.t; }
+
+  function cleanWeekdays(w) {
+    if (!Array.isArray(w)) return [];
+    return w.filter(function (d, i, arr) { return Number.isInteger(d) && d >= 0 && d <= 6 && arr.indexOf(d) === i; }).sort();
+  }
+
+  /** Ustawienia współdzielone między urządzeniami: stałe dni wolne (w) i dzienny koszt otwarcia w groszach (c). */
+  function setCfg(data, weekdays, openCost, now) {
+    var c = Number.isSafeInteger(openCost) && openCost >= 0 && openCost <= MAX_GROSZE ? openCost : 0;
+    var cfg = { w: cleanWeekdays(weekdays), c: c, t: now };
+    if (data.cfg && cfg.t <= data.cfg.t) cfg.t = data.cfg.t + 1;
+    return pack(data.days, data.exp, cfg);
+  }
 
   function expString(r) {
     return (r.a === null ? 'n' : r.a) + '|' + r.d + '|' + r.t + '|' + (r.n || '');
@@ -297,8 +323,15 @@
     var dropped = 0;
     var hasDays = raw && typeof raw === 'object' && raw.days && typeof raw.days === 'object';
     var hasExp = raw && typeof raw === 'object' && raw.exp && typeof raw.exp === 'object';
-    if (!hasDays && !hasExp) {
+    var hasCfg = raw && typeof raw === 'object' && raw.cfg && typeof raw.cfg === 'object';
+    if (!hasDays && !hasExp && !hasCfg) {
       return { data: out, dropped: raw ? 1 : 0 };
+    }
+    if (hasCfg) {
+      var cc = raw.cfg;
+      if (Number.isSafeInteger(cc.c) && cc.c >= 0 && cc.c <= MAX_GROSZE && Number.isFinite(cc.t) && cc.t >= 0) {
+        out.cfg = { w: cleanWeekdays(cc.w), c: cc.c, t: Math.floor(cc.t) };
+      } else dropped++;
     }
     if (hasExp) {
       Object.keys(raw.exp).forEach(function (id) {
@@ -342,7 +375,8 @@
         return '    "' + id + '": {"d": "' + r.d + '", "a": ' + (r.a === null ? 'null' : r.a) + ', "t": ' + r.t + (r.n ? ', "n": ' + JSON.stringify(r.n) : '') + '}';
       }).join(',\n') + '\n  }';
     }
-    return '{\n  "app": "utarg",\n  "v": 1,\n  "days": {\n' + lines.join(',\n') + (lines.length ? '\n' : '') + '  }' + expBlock + '\n}\n';
+    var cfgBlock = data.cfg ? ',\n  "cfg": {"w": [' + data.cfg.w.join(', ') + '], "c": ' + data.cfg.c + ', "t": ' + data.cfg.t + '}' : '';
+    return '{\n  "app": "utarg",\n  "v": 1,\n  "days": {\n' + lines.join(',\n') + (lines.length ? '\n' : '') + '  }' + expBlock + cfgBlock + '\n}\n';
   }
 
   function parseSerialized(text) {
@@ -429,7 +463,7 @@
     var exp = {};
     Object.keys(data.exp || {}).forEach(function (k) { exp[k] = data.exp[k]; });
     exp[id] = rec;
-    return { v: 1, days: data.days, exp: exp };
+    return pack(data.days, exp, data.cfg);
   }
 
   /** Aktywne wydatki z zakresu dat [from, to], od najstarszego. */
@@ -852,24 +886,53 @@
       });
     } else {
       var seenData = false;
+      var cols = { d: 0, a: 1, n: 2 };
+      var kind = 'days';
+      var expList = [];
+      if (head && !parseDateCell(head[0] || '')) {
+        // nagłówek kolumn: Data;Utarg;Notatka albo Data;Opis;Kwota (wydatki)
+        var amtName = '', noteName = '';
+        head.forEach(function (nm, i) {
+          nm = String(nm).trim().toLowerCase();
+          if (/^data/.test(nm)) cols.d = i;
+          else if (/^(kwota|utarg|wydat)/.test(nm)) { cols.a = i; amtName = nm; }
+          else if (/^(opis|notatka|uwagi|komentarz)/.test(nm)) { cols.n = i; noteName = nm; }
+        });
+        if (/^wydat/.test(amtName) || (/^opis/.test(noteName) && /^kwota/.test(amtName))) kind = 'expenses';
+      }
       rows.forEach(function (r, idx) {
         if (r.join('').trim() === '') return;
-        var key = parseDateCell(r[0] || '');
+        if (/^razem/i.test((r[cols.d] || '').trim())) return;
+        var key = parseDateCell(r[cols.d] || '');
         if (!key) {
           // pierwszy niepusty wiersz bez daty to nagłówek kolumn
           if (!seenData && r === head) return;
-          skipped.push({ line: idx + 1, reason: 'Nierozpoznana data „' + (r[0] || '').trim() + '”' });
+          skipped.push({ line: idx + 1, reason: 'Nierozpoznana data „' + (r[cols.d] || '').trim() + '”' });
           return;
         }
         seenData = true;
-        var a = parseAmountCell(r[1] || '');
+        var a = parseAmountCell(r[cols.a] || '');
         if (!a.ok) {
           if (a.empty) return;
-          skipped.push({ line: idx + 1, reason: 'Nierozpoznana kwota „' + (r[1] || '').trim() + '”' + (a.error ? ' – ' + a.error : '') });
+          skipped.push({ line: idx + 1, reason: 'Nierozpoznana kwota „' + (r[cols.a] || '').trim() + '”' + (a.error ? ' – ' + a.error : '') });
           return;
         }
-        entries[key] = { key: key, a: a.value, c: a.closed, n: normalizeNote(r.slice(2).join(' ')) };
+        var note = normalizeNote(cols.n === 2 && kind === 'days' ? r.slice(2).join(' ') : (r[cols.n] || ''));
+        if (kind === 'expenses') {
+          if (a.closed || a.value < 1) { skipped.push({ line: idx + 1, reason: 'Wydatek musi mieć kwotę większą od zera' }); return; }
+          expList.push({ d: key, a: a.value, n: note });
+          return;
+        }
+        entries[key] = { key: key, a: a.value, c: a.closed, n: note };
       });
+      if (kind === 'expenses') {
+        var keptExp = [];
+        expList.forEach(function (e) {
+          if (e.d > today) skipped.push({ line: 0, reason: 'Data z przyszłości: ' + e.d });
+          else keptExp.push(e);
+        });
+        return { entries: [], expenses: keptExp, skipped: skipped, layout: 'expenses' };
+      }
     }
 
     var kept = [];
@@ -898,7 +961,45 @@
       days[e.key] = rec;
       added++;
     });
-    return { data: { v: 1, days: days, exp: data.exp || {} }, added: added, existing: existing };
+    return { data: pack(days, data.exp, data.cfg), added: added, existing: existing };
+  }
+
+  function fnv(str) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h.toString(36);
+  }
+
+  /**
+   * Dopisuje wydatki z importu CSV. Wydatek, który już jest (ta sama data, kwota i opis), nie jest dodawany drugi raz,
+   * więc ponowne wczytanie tego samego pliku niczego nie dubluje. Zwraca { data, added, existing }.
+   */
+  function addExpenseEntries(data, list, now) {
+    var counts = {};
+    listExpenses(data).forEach(function (e) {
+      var k = e.d + '|' + e.a + '|' + e.n;
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    var seen = {};
+    var exp = {};
+    Object.keys(data.exp || {}).forEach(function (k) { exp[k] = data.exp[k]; });
+    var added = 0, existing = 0;
+    list.forEach(function (e) {
+      var nn = normalizeNote(e.n);
+      var key = e.d + '|' + e.a + '|' + nn;
+      var n = seen[key] = (seen[key] || 0) + 1;
+      if (n <= (counts[key] || 0)) { existing++; return; }
+      var id = 'i' + fnv(key) + '-' + n;
+      var prev = exp[id];
+      var rec = { d: e.d, a: e.a, t: prev && now <= prev.t ? prev.t + 1 : now };
+      if (nn) rec.n = nn;
+      exp[id] = rec;
+      added++;
+    });
+    return { data: pack(data.days, exp, data.cfg), added: added, existing: existing };
   }
 
   /* ---------- Eksport ---------- */
@@ -923,6 +1024,22 @@
     var ys = yearStats(data, y, { today: '9999-12-31' });
     rows.push(['Suma'].concat(ys.months.map(function (s) { return formatGrosze(s.total).replace(/ /g, ''); })).map(csvCell).join(';'));
     rows.push(['Razem rok ' + y, formatGrosze(ys.total).replace(/ /g, '')].map(csvCell).join(';'));
+    return rows.join('\r\n') + '\r\n';
+  }
+
+  /** Lista dni z utargiem w roku jako CSV (Data;Utarg;Notatka) – zawiera notatki i dni zamknięte, da się ją wczytać z powrotem. */
+  function csvDays(data, y) {
+    var prefix = pad(y, 4) + '-';
+    var rows = [['Data', 'Utarg', 'Notatka'].map(csvCell).join(';')];
+    var sum = 0;
+    Object.keys(data.days).sort().forEach(function (k) {
+      var r = data.days[k];
+      if (k.indexOf(prefix) !== 0 || r.a === null) return;
+      var p = parseKey(k);
+      rows.push([pad(p.d) + '.' + pad(p.m + 1) + '.' + p.y, r.c ? 'zamknięte' : formatGrosze(r.a).replace(/\u00a0/g, ''), r.n || ''].map(csvCell).join(';'));
+      sum += r.a;
+    });
+    rows.push(['Razem rok ' + y, formatGrosze(sum).replace(/\u00a0/g, ''), ''].map(csvCell).join(';'));
     return rows.join('\r\n') + '\r\n';
   }
 
@@ -957,7 +1074,7 @@
     analyze: analyze, monthToDay: monthToDay, compareMonths: compareMonths, trendMonths: trendMonths,
     EXP_CATS: EXP_CATS, expCatsOf: expCatsOf, expCategoryOf: expCategoryOf, expCatLabel: expCatLabel,
     getExpense: getExpense, setExpense: setExpense, listExpenses: listExpenses, expenseTotal: expenseTotal,
-    countExpenses: countExpenses, csvExpenses: csvExpenses,
+    countExpenses: countExpenses, csvExpenses: csvExpenses, csvDays: csvDays, addExpenseEntries: addExpenseEntries, setCfg: setCfg,
     pctChange: pctChange, insights: insights, parseCsvImport: parseCsvImport, parseDateCell: parseDateCell, addEntries: addEntries
   };
 });

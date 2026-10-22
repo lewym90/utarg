@@ -164,3 +164,105 @@ test('eksport wydatków do CSV', () => {
   assert.equal(lines[2], '05.03.2026;"Prąd; ""marzec""";1234,56');
   assert.equal(lines[3], 'Razem rok 2026;;1235,56');
 });
+
+/* ---------- Kopie i importy: pełny obieg ---------- */
+
+function fullData() {
+  let d = C.emptyData();
+  d = C.setDay(d, '2026-10-05', 123450, false, 10, 'deszcz');
+  d = C.setDay(d, '2026-10-06', 0, true, 11, 'święto');
+  d = C.setDay(d, '2026-10-07', 99900, false, 12);
+  d = C.setExpense(d, 'e1', '2026-10-05', 500000, 'Zatowarowanie', 13);
+  d = C.setExpense(d, 'e2', '2026-10-05', 12345, 'prąd', 14);
+  d = C.setExpense(d, 'e3', '2026-09-30', 7000, 'Czynsz; "wrzesień"', 15);
+  d = C.setCfg(d, [0, 6], 30000, 16);
+  return d;
+}
+
+test('kopia JSON zawiera wszystko i wraca bez zmian (utarg, notatki, wydatki, ustawienia)', () => {
+  const d = fullData();
+  const back = C.parseSerialized(C.serialize(d));
+  assert.equal(back.dropped, 0);
+  assert.deepEqual(back.data, d);
+  assert.equal(C.serialize(back.data), C.serialize(d));
+  assert.deepEqual(back.data.cfg, { w: [0, 6], c: 30000, t: 16 });
+});
+
+test('ustawienia: scalanie – nowsze wygrywa, remis deterministyczny, brak ustawień nie kasuje', () => {
+  const a = C.setCfg(C.emptyData(), [0], 100, 5);
+  const b = C.setCfg(C.emptyData(), [1], 200, 9);
+  assert.deepEqual(C.merge(a, b).cfg, b.cfg);
+  assert.deepEqual(C.merge(b, a).cfg, b.cfg);
+  assert.deepEqual(C.merge(a, C.emptyData()).cfg, a.cfg);
+  const x = C.setCfg(C.emptyData(), [1], 100, 5), y = C.setCfg(C.emptyData(), [2], 100, 5);
+  assert.deepEqual(C.merge(x, y), C.merge(y, x));
+  // merge zachowuje wydatki i ustawienia przy zapisie dnia
+  const z = C.setDay(fullData(), '2026-10-08', 1, false, 99);
+  assert.ok(z.cfg && Object.keys(z.exp).length === 3);
+  assert.ok(C.setExpense(fullData(), 'e9', '2026-10-01', 5, '', 99).cfg);
+  assert.ok(C.addEntries(fullData(), [], 1).data.cfg);
+});
+
+test('ustawienia: uszkodzone ustawienia są odrzucane, poprawne czyszczone', () => {
+  assert.equal(C.validate({ days: {}, cfg: { w: [1], c: -5, t: 1 } }).data.cfg, undefined);
+  assert.equal(C.validate({ days: {}, cfg: { w: [1], c: 5 } }).data.cfg, undefined);
+  assert.deepEqual(C.validate({ days: {}, cfg: { w: [6, 0, 6, 9, 'x'], c: 0, t: 3 } }).data.cfg, { w: [0, 6], c: 0, t: 3 });
+});
+
+test('lista dni CSV: zawiera notatki i dni zamknięte i wczytuje się z powrotem 1:1', () => {
+  const d = fullData();
+  const csv = C.csvDays(d, 2026);
+  assert.match(csv, /05\.10\.2026;1234,50;deszcz/);
+  assert.match(csv, /06\.10\.2026;zamknięte;święto/);
+  assert.match(csv, /Razem rok 2026;2233,50;/);
+  const r = C.parseCsvImport(csv, { today: '2026-12-31' });
+  assert.deepEqual(r.skipped, []);
+  const fresh = C.addEntries(C.emptyData(), r.entries, 1000).data;
+  for (const k of ['2026-10-05', '2026-10-06', '2026-10-07']) {
+    assert.equal(fresh.days[k].a, d.days[k].a);
+    assert.equal(fresh.days[k].c, d.days[k].c);
+    assert.equal(fresh.days[k].n, d.days[k].n);
+  }
+});
+
+test('wydatki CSV: wyeksportowana lista wczytuje się z powrotem, ponowny import niczego nie dubluje', () => {
+  const d = fullData();
+  const csv = C.csvExpenses(d, 2026);
+  const r = C.parseCsvImport(csv, { today: '2026-12-31' });
+  assert.equal(r.layout, 'expenses');
+  assert.deepEqual(r.skipped, []);
+  assert.equal(r.expenses.length, 3);
+  const fresh = C.addExpenseEntries(C.emptyData(), r.expenses, 1000);
+  assert.equal(fresh.added, 3);
+  assert.equal(C.expenseTotal(fresh.data), 500000 + 12345 + 7000);
+  assert.deepEqual(C.listExpenses(fresh.data).map((e) => [e.d, e.a, e.n]), C.listExpenses(d).map((e) => [e.d, e.a, e.n]));
+  // drugi raz to samo – nic nowego
+  const again = C.addExpenseEntries(fresh.data, r.expenses, 2000);
+  assert.equal(again.added, 0);
+  assert.equal(again.existing, 3);
+  // wydatki wpisane ręcznie też są rozpoznawane jako już istniejące
+  const manual = C.addExpenseEntries(d, r.expenses, 3000);
+  assert.equal(manual.added, 0);
+  // dwa identyczne wydatki w jednym dniu to dwa wydatki
+  const two = C.parseCsvImport('Data;Opis;Kwota\n05.10.2026;kawa;10\n05.10.2026;kawa;10\n', { today: '2026-12-31' });
+  const twoRes = C.addExpenseEntries(C.emptyData(), two.expenses, 5);
+  assert.equal(twoRes.added, 2);
+  assert.equal(C.addExpenseEntries(twoRes.data, two.expenses, 6).added, 0);
+  // ten sam plik na dwóch urządzeniach daje te same identyfikatory, więc po scaleniu nie ma duplikatów
+  const dev1 = C.addExpenseEntries(C.emptyData(), r.expenses, 100).data;
+  const dev2 = C.addExpenseEntries(C.emptyData(), r.expenses, 200).data;
+  assert.equal(C.countExpenses(C.merge(dev1, dev2)), 3);
+});
+
+test('wydatki CSV: nagłówek „Wydatek”, kwota zero i data z przyszłości są odrzucane z powodem', () => {
+  const r = C.parseCsvImport('Data;Wydatek\n2026-10-05;100\n2026-10-06;0\n2027-01-01;5\n', { today: '2026-10-22' });
+  assert.equal(r.layout, 'expenses');
+  assert.equal(r.expenses.length, 1);
+  assert.equal(r.skipped.length, 2);
+});
+
+test('lista dni z kolumnami w innej kolejności i nagłówkiem (Excel)', () => {
+  const r = C.parseCsvImport('Uwagi;Data;Utarg\nupał;05.10.2026;500\n;06.10.2026;600\n', { today: '2026-12-31' });
+  assert.equal(r.layout, 'list');
+  assert.deepEqual(r.entries.map((e) => [e.key, e.a, e.n]), [['2026-10-05', 50000, 'upał'], ['2026-10-06', 60000, '']]);
+});

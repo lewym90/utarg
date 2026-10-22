@@ -112,7 +112,7 @@
   /* ---------- Ustawienia ---------- */
 
   function loadSettings() {
-    var s = { theme: DEFAULT_SETTINGS.theme, closedWeekdays: [], openCost: 0 };
+    var s = { theme: DEFAULT_SETTINGS.theme, closedWeekdays: [], openCost: 0, cfgT: 0 };
     var raw = lsGet(KEY_SETTINGS);
     if (!raw) return s;
     try {
@@ -123,13 +123,14 @@
           return Number.isInteger(d) && d >= 0 && d <= 6 && a.indexOf(d) === i;
         });
       }
+      if (o && Number.isSafeInteger(o.cfgT) && o.cfgT > 0) s.cfgT = o.cfgT;
       if (o && Number.isSafeInteger(o.openCost) && o.openCost > 0 && o.openCost <= C.MAX_GROSZE) s.openCost = o.openCost;
     } catch (e) { /* użyj domyślnych */ }
     return s;
   }
 
   function saveSettings(s) {
-    return lsSet(KEY_SETTINGS, JSON.stringify({ theme: s.theme, closedWeekdays: s.closedWeekdays, openCost: s.openCost || 0 }));
+    return lsSet(KEY_SETTINGS, JSON.stringify({ theme: s.theme, closedWeekdays: s.closedWeekdays, openCost: s.openCost || 0, cfgT: s.cfgT || 0 }));
   }
 
   /* ---------- Flaga „są zmiany niewysłane na GitHub” ---------- */

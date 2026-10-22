@@ -839,3 +839,102 @@ test('raporty: miesięczny i roczny zawierają wydatki i wynik', async () => {
   assert.match(yr, /Wynik/);
   assert.ok(yr.includes('−1' + NB + '500,00' + NB + 'zł'));
 });
+
+test('kopia i import: pełny obieg przez plik JSON przenosi utarg, notatki, wydatki i ustawienia', async () => {
+  const a = boot();
+  await tick(60);
+  await a.w.__utarg.submitDay(Core.addDays(today, -1), '1500', false, null, 'deszcz');
+  await a.w.__utarg.submitDay(Core.addDays(today, -2), '0', true, null);
+  addExpense(a, '5000', 'zatowarowanie', Core.addDays(today, -1));
+  await tick();
+  click(a.w, q(a.doc, '.tabbar [data-view="settings"]'));
+  click(a.w, q(a.doc, '[data-action="weekday"][data-d="0"]'));
+  q(a.doc, '#cost-input').value = '250';
+  q(a.doc, '#cost-input').dispatchEvent(new a.w.Event('change', { bubbles: true }));
+  const exported = Core.serialize(a.w.__utarg.state.data);
+  assert.match(exported, /"exp": \{/);
+  assert.match(exported, /"cfg": \{"w": \[0\], "c": 25000/);
+
+  const b = boot();
+  await tick(60);
+  click(b.w, q(b.doc, '.tabbar [data-view="settings"]'));
+  const input = q(b.doc, '#import-file');
+  Object.defineProperty(input, 'files', { value: [new b.w.File([exported], 'kopia.json', { type: 'application/json' })], configurable: true });
+  input.dispatchEvent(new b.w.Event('change', { bubbles: true }));
+  await tick(100);
+  const dlg = text(b.doc, '#cf-text');
+  assert.match(dlg, /dni z utargiem: 2/);
+  assert.match(dlg, /wydatki: 1/);
+  assert.match(dlg, /ustawienia/);
+  click(b.w, q(b.doc, '[data-action="confirm-yes"]'));
+  await tick(60);
+  const sb = b.w.__utarg.state;
+  assert.equal(Core.sameData(sb.data, a.w.__utarg.state.data), true);
+  assert.deepEqual(Array.from(sb.settings.closedWeekdays), [0]);
+  assert.equal(sb.settings.openCost, 25000);
+  assert.match(b.w.localStorage.getItem('utarg.settings.v1'), /"openCost":25000/);
+  assert.deepEqual([...a.errors, ...b.errors], []);
+});
+
+test('ustawienia (dni wolne, koszt otwarcia) synchronizują się przez GitHub razem z danymi', async () => {
+  const gh = fakeGithub();
+  const a = boot({ fetch: gh.fetch });
+  await tick(60);
+  click(a.w, q(a.doc, '.tabbar [data-view="settings"]'));
+  click(a.w, q(a.doc, '[data-action="weekday"][data-d="0"]'));
+  q(a.doc, '#cost-input').value = '300';
+  q(a.doc, '#cost-input').dispatchEvent(new a.w.Event('change', { bubbles: true }));
+  typeInto(a.w, q(a.doc, '#repo-input'), 'jan/utarg-dane');
+  typeInto(a.w, q(a.doc, '#token-input'), 'tok');
+  click(a.w, q(a.doc, '[data-action="sync-connect"]'));
+  await tick(300);
+  assert.match(gh.file.text, /"cfg": \{"w": \[0\], "c": 30000/);
+
+  // drugie urządzenie dostaje ustawienia po połączeniu
+  const b = boot({ fetch: gh.fetch });
+  await tick(60);
+  assert.deepEqual(Array.from(b.w.__utarg.state.settings.closedWeekdays), []);
+  click(b.w, q(b.doc, '.tabbar [data-view="settings"]'));
+  typeInto(b.w, q(b.doc, '#repo-input'), 'jan/utarg-dane');
+  typeInto(b.w, q(b.doc, '#token-input'), 'tok');
+  click(b.w, q(b.doc, '[data-action="sync-connect"]'));
+  await tick(300);
+  assert.deepEqual(Array.from(b.w.__utarg.state.settings.closedWeekdays), [0]);
+  assert.equal(b.w.__utarg.state.settings.openCost, 30000);
+  // i pierwsze urządzenie widzi zmianę z drugiego po odświeżeniu w tle
+  click(b.w, q(b.doc, '.tabbar [data-view="settings"]'));
+  click(b.w, q(b.doc, '[data-action="weekday"][data-d="6"]'));
+  await tick(1200);
+  await a.w.UtargSync.poll();
+  await tick(50);
+  assert.deepEqual(Array.from(a.w.__utarg.state.settings.closedWeekdays).sort(), [0, 6]);
+  assert.deepEqual([...a.errors, ...b.errors], []);
+});
+
+test('import CSV wydatków: wczytanie, ponowny import nie dubluje', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc, errors } = app;
+  const d1 = Core.addDays(today, -1);
+  const p = Core.parseKey(d1);
+  const dmy = `${p.d}.${p.m + 1}.${p.y}`;
+  const csv = `Data;Opis;Kwota\n${dmy};Zatowarowanie;5 000,00\n${dmy};prąd;123,45\nRazem rok;;5123,45\n`;
+  click(w, q(doc, '.tabbar [data-view="settings"]'));
+  for (let round = 1; round <= 2; round++) {
+    const input = q(doc, '#import-file');
+    Object.defineProperty(input, 'files', { value: [new w.File([csv], 'wydatki-2026.csv', { type: 'text/csv' })], configurable: true });
+    input.dispatchEvent(new w.Event('change', { bubbles: true }));
+    await tick(100);
+    if (round === 1) {
+      assert.match(text(doc, '#cf-text'), /Wydatków do dodania: 2/);
+      click(w, q(doc, '[data-action="confirm-yes"]'));
+      await tick(60);
+      assert.equal(Core.countExpenses(w.__utarg.state.data), 2);
+      assert.equal(Core.expenseTotal(w.__utarg.state.data), 512345);
+    } else {
+      assert.match(text(doc, '#toasts'), /już są w aplikacji/);
+      assert.equal(Core.countExpenses(w.__utarg.state.data), 2);
+    }
+  }
+  assert.deepEqual(errors, []);
+});

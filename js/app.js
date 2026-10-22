@@ -5,7 +5,7 @@
   var C = window.UtargCore;
   var Store = window.UtargStore;
   var Sync = window.UtargSync;
-  var APP_VERSION = '1.2.1';
+  var APP_VERSION = '1.3.0';
 
   /* ---------- Narzędzia ---------- */
 
@@ -94,6 +94,24 @@
   }
 
   /* ---------- Zapis danych ---------- */
+
+  /** Ustawienia współdzielone (stałe dni wolne, koszt otwarcia) przychodzą razem z danymi z kopii i z pliku. */
+  function applyCfgFromData() {
+    var cfg = state.data.cfg;
+    if (!cfg || !(cfg.t > (state.settings.cfgT || 0))) return false;
+    state.settings.closedWeekdays = cfg.w.slice();
+    state.settings.openCost = cfg.c;
+    state.settings.cfgT = cfg.t;
+    Store.saveSettings(state.settings);
+    return true;
+  }
+
+  /** Zapisuje bieżące ustawienia współdzielone do danych (a więc do kopii na GitHubie). */
+  function pushCfg() {
+    commit(C.setCfg(state.data, state.settings.closedWeekdays, state.settings.openCost || 0, Date.now()));
+    state.settings.cfgT = state.data.cfg.t;
+    Store.saveSettings(state.settings);
+  }
 
   function commit(newData) {
     state.data = newData;
@@ -792,11 +810,12 @@
     var list = Object.keys(years).sort().reverse().slice(0, 4);
     if (!list.length) list = [String(state.today.slice(0, 4))];
     var n = C.countEntries(state.data);
-    var h = '<div class="card"><h2>Twoje dane</h2><p class="help">Zapisanych wpisów: <b>' + n + '</b>, wydatków: <b>' + C.countExpenses(state.data) + '</b>. Plik kopii możesz przechowywać dodatkowo na dysku lub w poczcie. „Wczytaj z pliku” przyjmuje kopię (JSON) oraz historię z CSV: tabelę wyeksportowaną stąd albo listę „data;kwota” (np. z Excela). Istniejące wpisy nie są nadpisywane.</p>' +
+    var h = '<div class="card"><h2>Twoje dane</h2><p class="help">Zapisanych wpisów: <b>' + n + '</b>, wydatków: <b>' + C.countExpenses(state.data) + '</b>. Kopia (JSON) zawiera wszystko: utarg, notatki, wydatki oraz ustawienia (dni wolne, koszt otwarcia). Przechowuj ją dodatkowo na dysku lub w poczcie. „Wczytaj z pliku” przyjmuje kopię (JSON) oraz CSV: tabelę roczną, listę dni („Data;Utarg;Notatka”), listę wydatków („Data;Opis;Kwota”) albo prostą listę „data;kwota” z Excela. Wczytanie niczego nie nadpisuje ani nie dubluje.</p>' +
       '<div class="btn-row"><button class="btn" data-action="export-json">' + icon('download') + 'Pobierz kopię (JSON)</button>' +
       '<button class="btn" data-action="import-pick">' + icon('upload') + 'Wczytaj z pliku</button></div>' +
       '<div class="btn-row">' + list.map(function (y) {
-        return '<button class="btn small" data-action="export-csv" data-y="' + y + '">' + icon('download') + 'Tabela ' + y + ' (CSV)</button>';
+        return '<button class="btn small" data-action="export-csv" data-y="' + y + '">' + icon('download') + 'Tabela ' + y + ' (CSV)</button>' +
+          '<button class="btn small" data-action="export-days-csv" data-y="' + y + '">' + icon('download') + 'Lista dni ' + y + ' (CSV)</button>';
       }).join('') + Object.keys(expYears).sort().reverse().slice(0, 4).map(function (y) {
         return '<button class="btn small" data-action="export-exp-csv" data-y="' + y + '">' + icon('download') + 'Wydatki ' + y + ' (CSV)</button>';
       }).join('') + '</div>' +
@@ -1355,6 +1374,13 @@
   }
 
   /** Wczytuje historię z pliku CSV. Istniejące wpisy nie są nadpisywane. */
+  function skippedInfo(skipped) {
+    if (!skipped.length) return '';
+    return ' Nie wczytano wierszy: ' + skipped.length + ' (' + skipped.slice(0, 2).map(function (x) {
+      return (x.line ? 'wiersz ' + x.line + ': ' : '') + x.reason;
+    }).join('; ') + (skipped.length > 2 ? '…' : '') + ').';
+  }
+
   function importCsv(text, name) {
     var ym = /(20\d{2}|19\d{2})/.exec(name);
     var r = C.parseCsvImport(text, { today: C.todayKey(), year: ym ? +ym[1] : null });
@@ -1362,6 +1388,7 @@
       showToast('Nie udało się ustalić roku tabeli. Dopisz rok do nazwy pliku, np. utarg-2025.csv.', { kind: 'error' });
       return;
     }
+    if (r.layout === 'expenses') { importExpensesCsv(r); return; }
     if (!r.entries.length) {
       showToast(r.skipped.length ? 'Nie znaleziono poprawnych wpisów. ' + r.skipped[0].reason : 'To nie wygląda na plik z historią utargu.', { kind: 'error' });
       return;
@@ -1370,14 +1397,31 @@
     if (!out.added) { showToast('Wszystkie dni z pliku już mają wpis.'); return; }
     var info = 'Nowych dni do dodania: ' + out.added + '.';
     if (out.existing) info += ' Pominięto dni, które już mają wpis: ' + out.existing + '.';
-    if (r.skipped.length) {
-      info += ' Nie wczytano wierszy: ' + r.skipped.length + ' (' + r.skipped.slice(0, 2).map(function (x) { return (x.line ? 'wiersz ' + x.line + ': ' : '') + x.reason; }).join('; ') + (r.skipped.length > 2 ? '…' : '') + ').';
-    }
+    info += skippedInfo(r.skipped);
     confirmDialog({ title: 'Wczytać historię z CSV?', text: info, ok: 'Wczytaj', cancel: 'Anuluj' }).then(function (yes) {
       if (!yes) return;
       var again = C.addEntries(state.data, r.entries, Date.now());
       commit(again.data);
       showToast('Wczytano ' + again.added + ' ' + C.plural(again.added, 'dzień', 'dni', 'dni'));
+      refresh(true);
+    });
+  }
+
+  function importExpensesCsv(r) {
+    if (!r.expenses.length) {
+      showToast(r.skipped.length ? 'Nie znaleziono poprawnych wydatków. ' + r.skipped[0].reason : 'W pliku nie ma wydatków.', { kind: 'error' });
+      return;
+    }
+    var out = C.addExpenseEntries(state.data, r.expenses, Date.now());
+    if (!out.added) { showToast('Wszystkie wydatki z pliku już są w aplikacji.'); return; }
+    var info = 'Wydatków do dodania: ' + out.added + '.';
+    if (out.existing) info += ' Pominięto wydatki, które już są w aplikacji: ' + out.existing + '.';
+    info += skippedInfo(r.skipped);
+    confirmDialog({ title: 'Wczytać wydatki z CSV?', text: info, ok: 'Wczytaj', cancel: 'Anuluj' }).then(function (yes) {
+      if (!yes) return;
+      var again = C.addExpenseEntries(state.data, r.expenses, Date.now());
+      commit(again.data);
+      showToast('Wczytano ' + again.added + ' ' + C.plural(again.added, 'wydatek', 'wydatki', 'wydatków'));
       refresh(true);
     });
   }
@@ -1390,31 +1434,38 @@
       var raw = String(reader.result);
       if (/\.csv$/i.test(file.name || '') || !/^\s*\{/.test(raw.replace(/^\ufeff/, ''))) { importCsv(raw, file.name || ''); return; }
       var parsed = C.parseSerialized(raw);
-      if (parsed.error || C.countEntries(parsed.data) + Object.keys(parsed.data.days).length + Object.keys(parsed.data.exp).length === 0) {
+      if (parsed.error || Object.keys(parsed.data.days).length + Object.keys(parsed.data.exp).length + (parsed.data.cfg ? 1 : 0) === 0) {
         showToast('To nie jest plik kopii Utarg.', { kind: 'error' });
         return;
       }
       var merged = C.merge(state.data, parsed.data);
-      var changed = 0;
+      var nDays = 0, nExp = 0;
       Object.keys(merged.days).forEach(function (k) {
         var a = merged.days[k], b = state.data.days[k];
-        if (!b || a.t !== b.t || a.a !== b.a || a.c !== b.c) changed++;
+        if (!b || a.t !== b.t || a.a !== b.a || a.c !== b.c || a.n !== b.n) nDays++;
       });
       Object.keys(merged.exp).forEach(function (k) {
         var a = merged.exp[k], b = state.data.exp[k];
-        if (!b || a.t !== b.t || a.a !== b.a || a.d !== b.d) changed++;
+        if (!b || a.t !== b.t || a.a !== b.a || a.d !== b.d || a.n !== b.n) nExp++;
       });
-      if (!changed) { showToast('Wszystkie dane z pliku już są w aplikacji.'); return; }
+      var cfgChanged = !!merged.cfg && (!state.data.cfg || merged.cfg.t !== state.data.cfg.t);
+      var changed = nDays + nExp;
+      if (!changed && !cfgChanged) { showToast('Wszystkie dane z pliku już są w aplikacji.'); return; }
+      var what = [];
+      if (nDays) what.push('dni z utargiem: ' + nDays);
+      if (nExp) what.push('wydatki: ' + nExp);
+      if (cfgChanged) what.push('ustawienia (dni wolne, koszt otwarcia)');
       confirmDialog({
         title: 'Wczytać dane z pliku?',
-        text: 'Nowych lub nowszych wpisów: ' + changed + '. Istniejące wpisy nie zostaną usunięte.' +
+        text: 'Nowych lub nowszych wpisów: ' + changed + ' (' + what.join(', ') + '). Istniejące wpisy nie zostaną usunięte.' +
           (parsed.dropped ? ' Pominięto uszkodzonych wpisów: ' + parsed.dropped + '.' : ''),
         ok: 'Wczytaj',
         cancel: 'Anuluj'
       }).then(function (yes) {
         if (!yes) return;
         commit(merged);
-        showToast('Wczytano ' + changed + ' ' + C.plural(changed, 'wpis', 'wpisy', 'wpisów'));
+        applyCfgFromData();
+        showToast('Wczytano ' + (changed || 'ustawienia') + (changed ? ' ' + C.plural(changed, 'wpis', 'wpisy', 'wpisów') : ''));
         refresh(true);
       });
     };
@@ -1587,6 +1638,7 @@
         var i = state.settings.closedWeekdays.indexOf(d);
         if (i >= 0) state.settings.closedWeekdays.splice(i, 1); else state.settings.closedWeekdays.push(d);
         Store.saveSettings(state.settings);
+        pushCfg();
         refresh(true);
         break;
       }
@@ -1607,6 +1659,11 @@
       case 'exp-save': expenseSave(); break;
       case 'exp-delete': deleteExpense(); break;
       case 'exp-tag': toggleExpTag(el.getAttribute('data-tag')); break;
+      case 'export-days-csv': {
+        var dy = +el.getAttribute('data-y');
+        download('utarg-dni-' + dy + '.csv', '\ufeff' + C.csvDays(state.data, dy), 'text/csv;charset=utf-8');
+        break;
+      }
       case 'export-exp-csv': {
         var ey = +el.getAttribute('data-y');
         download('utarg-wydatki-' + ey + '.csv', '\ufeff' + C.csvExpenses(state.data, ey), 'text/csv;charset=utf-8');
@@ -1646,6 +1703,7 @@
     if (!text.trim()) {
       state.settings.openCost = 0;
       Store.saveSettings(state.settings);
+      pushCfg();
       setHint(hint, '', false);
       showToast('Koszt otwarcia wyłączony');
       return;
@@ -1654,6 +1712,7 @@
     if (!r.ok) { setHint(hint, r.error, true); return; }
     state.settings.openCost = r.value;
     Store.saveSettings(state.settings);
+    pushCfg();
     setHint(hint, '', false);
     showToast('Zapisano koszt otwarcia: ' + C.formatMoney(r.value));
   }
@@ -1737,6 +1796,7 @@
       if (ev.key === 'utarg.data.v1' && ev.newValue) {
         var other = C.parseSerialized(ev.newValue).data;
         state.data = C.merge(state.data, other);
+        applyCfgFromData();
         refresh(false);
       }
     });
@@ -1784,6 +1844,8 @@
   /* ---------- Start ---------- */
 
   function finishStart() {
+    // użytkownicy sprzed wersji 1.3 mają ustawienia tylko na urządzeniu – dołącz je do kopii
+    if (!state.data.cfg && (state.settings.closedWeekdays.length || state.settings.openCost)) pushCfg();
     renderView();
     focusAmount();
     applyTheme();
@@ -1800,6 +1862,7 @@
       getVersion: function () { return state.version; },
       applyRemote: function (d) {
         state.data = C.merge(state.data, d);
+        applyCfgFromData();
         state.storageOk = Store.save(state.data) && state.storageOk;
         refresh(false);
       },
@@ -1815,6 +1878,7 @@
     var started = false;
     function begin(data) {
       if (data) state.data = C.merge(state.data, data);
+      applyCfgFromData();
       if (started) { refresh(false); return; }
       started = true;
       finishStart();

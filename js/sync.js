@@ -189,7 +189,8 @@
       var now = new Date();
       var body = {
         message: 'Utarg: kopia ' + C.todayKey(now) + ' ' + ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2) +
-          ' (' + C.countEntries(merged) + ' ' + C.plural(C.countEntries(merged), 'wpis', 'wpisy', 'wpisów') + ')',
+          ' (' + C.countEntries(merged) + ' ' + C.plural(C.countEntries(merged), 'wpis', 'wpisy', 'wpisów') +
+          (C.countExpenses(merged) ? ', ' + C.countExpenses(merged) + ' ' + C.plural(C.countExpenses(merged), 'wydatek', 'wydatki', 'wydatków') : '') + ')',
         content: toB64(newText)
       };
       if (cfg.branch) body.branch = cfg.branch;
