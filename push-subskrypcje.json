@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "subs": [
+    {
+      "endpoint": "https://fcm.googleapis.com/fcm/send/ef9n0ktY7Gg:APA91bEvrJK44x8SviNHDinWuCSsFjC2Ox9XCoC9vtDTimpZHxcHhFssdRrfGZHlnBXJwqu1dL1NBMr8hzYSSfrT25kZKKw_8r_MOpnqzrUl1mePtY8SRa6o5dbswOEFLc5BvJ2P0cCW",
+      "keys": {
+        "p256dh": "BI7hbxau7te_ce464K93MePJr8RHXYXa-uFUY85KtE8MIpT7qXd2z2ZnZbKv6FeSjxgoKfXVEi1ZED9kf4Xk8_4",
+        "auth": "enZRipxS3qlyA1KZGtJ8TQ"
+      },
+      "t": 1792698486200,
+      "label": "Android"
+    }
+  ]
+}
