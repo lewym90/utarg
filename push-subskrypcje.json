@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "subs": [
+    {
+      "endpoint": "https://web.push.apple.com/QEmstbAn2rWu3A72qjOw__FABWCB22L09O4-tUk2QwNCovOdsr8cCqwyMObRiC31DxetCVKIFK6dUDhTqvVdzqwfvcesP_IFQI_0uy7K4rQazOeZyKS6TDD4CGfPoAsHbPxvxsMjuTHB_pQcrOnpmDTzgxbnwjdRuVkKSbHaIBc",
+      "keys": {
+        "p256dh": "BG88iJBnnhAU0khJ2EJsrtjPlTmV5e0Fm891ZR61jBqkEOCbW6HiIdBjQwXuXwqVtccD8UFip2wI_Yaluv9iyN8",
+        "auth": "9ciWWd2EGaiyzx7yBacgzw"
+      },
+      "t": 1792673918453,
+      "label": "iPhone"
+    }
+  ]
+}
