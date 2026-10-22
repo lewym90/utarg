@@ -206,10 +206,13 @@
    *  c = true → dzień oznaczony jako „sklep zamknięty” (a wynosi wtedy 0)
    *  t = czas ostatniej zmiany (ms)
    *  n = opcjonalna krótka notatka (np. „deszcz”), tylko przy aktywnym wpisie
+   *
+   * Wydatki są osobno: data.exp = { "<id>": { d: "RRRR-MM-DD", a: grosze|null, n: opis, t: ms } }
+   *  w jednym dniu może być wiele wydatków; a = null to znacznik usunięcia (jak wyżej).
    */
 
   function emptyData() {
-    return { v: 1, days: {} };
+    return { v: 1, days: {}, exp: {} };
   }
 
   var NOTE_MAX = 60;
@@ -248,7 +251,7 @@
     var days = {};
     Object.keys(data.days).forEach(function (k) { days[k] = data.days[k]; });
     days[key] = rec;
-    return { v: 1, days: days };
+    return { v: 1, days: days, exp: data.exp || {} };
   }
 
   /** Scala dwa zbiory danych. Dla każdego dnia wygrywa nowszy wpis. */
@@ -264,20 +267,52 @@
       else if (x.t !== y.t) days[k] = x.t > y.t ? x : y;
       else days[k] = recString(x) >= recString(y) ? x : y;
     });
-    return { v: 1, days: days };
+    var exp = {};
+    var ea = a.exp || {}, eb = b.exp || {};
+    var ekeys = {};
+    Object.keys(ea).forEach(function (k) { ekeys[k] = 1; });
+    Object.keys(eb).forEach(function (k) { ekeys[k] = 1; });
+    Object.keys(ekeys).forEach(function (k) {
+      var x = ea[k], y = eb[k];
+      if (!x) exp[k] = y;
+      else if (!y) exp[k] = x;
+      else if (x.t !== y.t) exp[k] = x.t > y.t ? x : y;
+      else exp[k] = expString(x) >= expString(y) ? x : y;
+    });
+    return { v: 1, days: days, exp: exp };
   }
 
   /**
    * Sprawdza dane z zewnątrz (plik, GitHub, pamięć). Nigdy nie rzuca wyjątku.
    * Zwraca { data, dropped } – niepoprawne wpisy są pomijane i zliczane.
    */
+  var EXP_ID = /^[A-Za-z0-9_-]{1,40}$/;
+
+  function expString(r) {
+    return (r.a === null ? 'n' : r.a) + '|' + r.d + '|' + r.t + '|' + (r.n || '');
+  }
+
   function validate(raw) {
     var out = emptyData();
     var dropped = 0;
-    if (!raw || typeof raw !== 'object' || !raw.days || typeof raw.days !== 'object') {
+    var hasDays = raw && typeof raw === 'object' && raw.days && typeof raw.days === 'object';
+    var hasExp = raw && typeof raw === 'object' && raw.exp && typeof raw.exp === 'object';
+    if (!hasDays && !hasExp) {
       return { data: out, dropped: raw ? 1 : 0 };
     }
-    Object.keys(raw.days).forEach(function (k) {
+    if (hasExp) {
+      Object.keys(raw.exp).forEach(function (id) {
+        var r = raw.exp[id];
+        if (!EXP_ID.test(id) || !r || typeof r !== 'object' || !parseKey(r.d)) { dropped++; return; }
+        var t = Number.isFinite(r.t) && r.t >= 0 ? Math.floor(r.t) : 0;
+        if (r.a === null) { out.exp[id] = { d: r.d, a: null, t: t }; return; }
+        if (!Number.isSafeInteger(r.a) || r.a < 1 || r.a > MAX_GROSZE) { dropped++; return; }
+        out.exp[id] = { d: r.d, a: r.a, t: t };
+        var en = normalizeNote(r.n);
+        if (en) out.exp[id].n = en;
+      });
+    }
+    Object.keys(hasDays ? raw.days : {}).forEach(function (k) {
       var r = raw.days[k];
       if (!parseKey(k) || !r || typeof r !== 'object') { dropped++; return; }
       var t = Number.isFinite(r.t) && r.t >= 0 ? Math.floor(r.t) : 0;
@@ -299,7 +334,15 @@
       return '    "' + k + '": {"a": ' + (r.a === null ? 'null' : r.a) +
         ', "c": ' + (r.c ? 'true' : 'false') + ', "t": ' + r.t + (r.n ? ', "n": ' + JSON.stringify(r.n) : '') + '}';
     });
-    return '{\n  "app": "utarg",\n  "v": 1,\n  "days": {\n' + lines.join(',\n') + (lines.length ? '\n' : '') + '  }\n}\n';
+    var expKeys = Object.keys(data.exp || {}).sort();
+    var expBlock = '';
+    if (expKeys.length) {
+      expBlock = ',\n  "exp": {\n' + expKeys.map(function (id) {
+        var r = data.exp[id];
+        return '    "' + id + '": {"d": "' + r.d + '", "a": ' + (r.a === null ? 'null' : r.a) + ', "t": ' + r.t + (r.n ? ', "n": ' + JSON.stringify(r.n) : '') + '}';
+      }).join(',\n') + '\n  }';
+    }
+    return '{\n  "app": "utarg",\n  "v": 1,\n  "days": {\n' + lines.join(',\n') + (lines.length ? '\n' : '') + '  }' + expBlock + '\n}\n';
   }
 
   function parseSerialized(text) {
@@ -320,6 +363,98 @@
     Object.keys(data.days).forEach(function (k) { if (data.days[k].a !== null) n++; });
     return n;
   }
+
+  /* ---------- Wydatki ---------- */
+
+  /** Kategorie wydatków rozpoznawane z opisu (początek słowa, bez rozróżniania wielkości liter). */
+  var EXP_CATS = [
+    { id: 'goods', label: 'Towar', stems: ['towar', 'zatowar', 'dostaw', 'hurtown', 'zakup'] },
+    { id: 'power', label: 'Prąd', stems: ['prąd', 'prad', 'energi'] },
+    { id: 'heat', label: 'Ogrzewanie', stems: ['ogrzew', 'gaz', 'węgiel', 'wegiel'] },
+    { id: 'rent', label: 'Czynsz', stems: ['czynsz', 'najem', 'wynajm'] },
+    { id: 'wages', label: 'Wynagrodzenia', stems: ['wynagrodz', 'pensj', 'pracown', 'wypłat', 'wyplat'] },
+    { id: 'tax', label: 'Podatki i ZUS', stems: ['zus', 'podat', 'vat', 'pit', 'cit'] }
+  ];
+  var EXP_OTHER = { id: 'other', label: 'Inne' };
+
+  function expCatsOf(note) {
+    var low = String(note || '').toLowerCase();
+    if (!low) return [];
+    return EXP_CATS.filter(function (c) {
+      return c.stems.some(function (st) {
+        var i = low.indexOf(st);
+        while (i >= 0) {
+          if (i === 0 || !/[a-ząćęłńóśźż0-9]/.test(low.charAt(i - 1))) return true;
+          i = low.indexOf(st, i + 1);
+        }
+        return false;
+      });
+    }).map(function (c) { return c.id; });
+  }
+
+  function expCategoryOf(note) {
+    var c = expCatsOf(note);
+    return c.length ? c[0] : EXP_OTHER.id;
+  }
+
+  function expCatLabel(id) {
+    for (var i = 0; i < EXP_CATS.length; i++) if (EXP_CATS[i].id === id) return EXP_CATS[i].label;
+    return EXP_OTHER.label;
+  }
+
+  function getExpense(data, id) {
+    var r = data.exp && data.exp[id];
+    return r && r.a !== null ? r : null;
+  }
+
+  /**
+   * Nowy obiekt danych z zapisanym wydatkiem. amount: grosze (>0) albo null (usuń).
+   * Każdy wydatek ma własny identyfikator, więc w jednym dniu może ich być wiele.
+   */
+  function setExpense(data, id, date, amount, note, now) {
+    if (!EXP_ID.test(String(id))) throw new Error('Niepoprawny identyfikator wydatku');
+    var prev = data.exp && data.exp[id];
+    var d = date || (prev && prev.d);
+    if (!parseKey(d)) throw new Error('Niepoprawna data: ' + d);
+    var rec;
+    if (amount === null) {
+      rec = { d: d, a: null, t: now };
+    } else {
+      if (!Number.isSafeInteger(amount) || amount < 1 || amount > MAX_GROSZE) throw new Error('Niepoprawna kwota');
+      rec = { d: d, a: amount, t: now };
+      var nn = normalizeNote(note);
+      if (nn) rec.n = nn;
+    }
+    if (prev && rec.t <= prev.t) rec.t = prev.t + 1;
+    var exp = {};
+    Object.keys(data.exp || {}).forEach(function (k) { exp[k] = data.exp[k]; });
+    exp[id] = rec;
+    return { v: 1, days: data.days, exp: exp };
+  }
+
+  /** Aktywne wydatki z zakresu dat [from, to], od najstarszego. */
+  function listExpenses(data, from, to) {
+    var out = [];
+    var exp = data.exp || {};
+    Object.keys(exp).forEach(function (id) {
+      var r = exp[id];
+      if (r.a === null) return;
+      if (from && r.d < from) return;
+      if (to && r.d > to) return;
+      out.push({ id: id, d: r.d, a: r.a, n: r.n || '', t: r.t });
+    });
+    out.sort(function (x, y) { return x.d < y.d ? -1 : x.d > y.d ? 1 : x.t - y.t; });
+    return out;
+  }
+
+  function expenseTotal(data, from, to) {
+    return listExpenses(data, from, to).reduce(function (s, e) { return s + e.a; }, 0);
+  }
+
+  function countExpenses(data) {
+    return listExpenses(data).length;
+  }
+
 
   /* ---------- Podsumowania ---------- */
 
@@ -359,9 +494,10 @@
         else missing.push(key);
       }
     }
+    var expenses = expenseTotal(data, dateKey(y, m, 1), dateKey(y, m, n));
     return {
       y: y, m: m, days: n, total: total, open: open, closed: closed, standing: standing,
-      missing: missing, best: best,
+      missing: missing, best: best, expenses: expenses, profit: total - expenses,
       avg: open > 0 ? Math.round(total / open) : 0,
       finished: dateKey(y, m, n) < today
     };
@@ -370,7 +506,7 @@
   /** Podsumowanie roku: 12 miesięcy + suma ze wszystkich miesięcy. */
   function yearStats(data, y, opts) {
     var months = [];
-    var total = 0, open = 0, closed = 0, missing = 0;
+    var total = 0, open = 0, closed = 0, missing = 0, expenses = 0;
     var bestIdx = -1;
     for (var m = 0; m < 12; m++) {
       var s = monthStats(data, y, m, opts);
@@ -379,10 +515,12 @@
       open += s.open;
       closed += s.closed;
       missing += s.missing.length;
+      expenses += s.expenses;
       if (s.total > 0 && (bestIdx < 0 || s.total > months[bestIdx].total)) bestIdx = m;
     }
     return {
       y: y, months: months, total: total, open: open, closed: closed, missing: missing,
+      expenses: expenses, profit: total - expenses,
       bestMonth: bestIdx,
       avg: open > 0 ? Math.round(total / open) : 0
     };
@@ -509,13 +647,26 @@
     });
 
     var sorted = list.slice().sort(function (a, b) { return b.a - a.a || (a.key < b.key ? 1 : -1); });
+    var expList = listExpenses(data, opts.from || null, to);
+    var expTotal = expList.reduce(function (acc, e) { return acc + e.a; }, 0);
+    var catMap = {};
+    expList.forEach(function (e) {
+      var c = expCategoryOf(e.n);
+      if (!catMap[c]) catMap[c] = { id: c, label: expCatLabel(c), total: 0, n: 0 };
+      catMap[c].total += e.a; catMap[c].n++;
+    });
+    var expCats = Object.keys(catMap).map(function (k) { return catMap[k]; }).sort(function (x, y) { return y.total - x.total; });
     var best = sorted.slice(0, 3);
     // najsłabsze dni nie powtarzają się z najlepszymi
     var worst = sorted.slice(best.length).slice(-3).reverse();
     return {
       from: from, to: to, openDays: openDays, closedDays: closedDays, total: total, avg: avg,
       weekdays: wd, tags: tags, openCost: openCost, belowCost: belowCost,
-      best: best, worst: worst
+      best: best, worst: worst,
+      // wydatki NIE wpływają na ocenę dni (dni tygodnia, okoliczności, koszt otwarcia) – liczone osobno
+      expTotal: expTotal, expCount: expList.length, expCats: expCats,
+      result: total - expTotal,
+      breakEven: openDays ? Math.ceil(expTotal / openDays) : 0
     };
   }
 
@@ -550,7 +701,8 @@
       var idx = p.y * 12 + p.m - i;
       var y = Math.floor(idx / 12), m = idx - y * 12;
       var s = monthToDay(data, y, m, 31);
-      out.push({ y: y, m: m, total: s.total, open: s.open });
+      var ex = expenseTotal(data, dateKey(y, m, 1), dateKey(y, m, daysInMonth(y, m)));
+      out.push({ y: y, m: m, total: s.total, open: s.open, expenses: ex, profit: s.total - ex });
     }
     return out;
   }
@@ -596,6 +748,12 @@
         var pct = Math.round(an.belowCost / an.openDays * 100);
         out.push(an.belowCost + ' z ' + an.openDays + ' dni (' + pct + '%) miało utarg poniżej kosztu otwarcia.');
       }
+    }
+    if (an.expTotal > 0) {
+      out.push('Wydatki w okresie: ' + money(an.expTotal) + ', utarg: ' + money(an.total) + ' – ' +
+        (an.result >= 0 ? 'zysk ' : 'strata ') + money(Math.abs(an.result)) + '.');
+      out.push('Żeby przy tych wydatkach wyjść na zero, trzeba średnio ok. ' + money(an.breakEven) + ' utargu na dzień z utargiem (teraz: ' + money(an.avg) +
+        '). Jednorazowe wydatki, jak towar czy rachunki, nie wpływają na ocenę poszczególnych dni.');
     }
     return out;
   }
@@ -740,7 +898,7 @@
       days[e.key] = rec;
       added++;
     });
-    return { data: { v: 1, days: days }, added: added, existing: existing };
+    return { data: { v: 1, days: days, exp: data.exp || {} }, added: added, existing: existing };
   }
 
   /* ---------- Eksport ---------- */
@@ -768,6 +926,20 @@
     return rows.join('\r\n') + '\r\n';
   }
 
+  /** Lista wydatków roku jako CSV (Data;Opis;Kwota). */
+  function csvExpenses(data, y) {
+    var list = listExpenses(data, pad(y, 4) + '-01-01', pad(y, 4) + '-12-31');
+    var rows = [['Data', 'Opis', 'Kwota'].map(csvCell).join(';')];
+    var sum = 0;
+    list.forEach(function (e) {
+      var p = parseKey(e.d);
+      rows.push([pad(p.d) + '.' + pad(p.m + 1) + '.' + p.y, e.n, formatGrosze(e.a).replace(/\u00a0/g, '')].map(csvCell).join(';'));
+      sum += e.a;
+    });
+    rows.push(['Razem rok ' + y, '', formatGrosze(sum).replace(/\u00a0/g, '')].map(csvCell).join(';'));
+    return rows.join('\r\n') + '\r\n';
+  }
+
   return {
     MONTHS: MONTHS, MONTHS_GEN: MONTHS_GEN, MONTHS_SHORT: MONTHS_SHORT,
     WEEKDAYS: WEEKDAYS, WEEKDAYS_SHORT: WEEKDAYS_SHORT,
@@ -783,6 +955,9 @@
     maxOpenDay: maxOpenDay, csvYear: csvYear,
     NOTE_MAX: NOTE_MAX, TAGS: TAGS, normalizeNote: normalizeNote, tagsOf: tagsOf, tagLabel: tagLabel,
     analyze: analyze, monthToDay: monthToDay, compareMonths: compareMonths, trendMonths: trendMonths,
+    EXP_CATS: EXP_CATS, expCatsOf: expCatsOf, expCategoryOf: expCategoryOf, expCatLabel: expCatLabel,
+    getExpense: getExpense, setExpense: setExpense, listExpenses: listExpenses, expenseTotal: expenseTotal,
+    countExpenses: countExpenses, csvExpenses: csvExpenses,
     pctChange: pctChange, insights: insights, parseCsvImport: parseCsvImport, parseDateCell: parseDateCell, addEntries: addEntries
   };
 });

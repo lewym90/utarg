@@ -489,3 +489,21 @@ details.how a, .help a { color: var(--accent-text); font-weight: 650; }
 @media (max-width: 380px) {
   .nav-btn { font-size: 10.5px; padding: 7px 2px; }
 }
+
+/* ===== Wydatki ===== */
+
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0 8px; }
+.section-head .section-title { margin: 0; }
+.section-head .btn .ic { width: 18px; height: 18px; }
+.exp-line { display: block; font-size: 12.5px; font-weight: 600; color: var(--danger-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.amt.neg, .num.neg { color: var(--danger-text); }
+.amt.pos { color: var(--ok); }
+.hero-fin { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; font-size: 14px; color: rgba(255, 255, 255, .85); position: relative; z-index: 1; }
+.hero-fin b { color: #fff; font-weight: 750; }
+.sub-title { font-size: 14px; font-weight: 700; color: var(--ink-2); margin: 16px 0 4px; }
+.grid2.tight { margin-top: 10px; }
+.metric.ok { background: var(--ok-soft); border-color: transparent; }
+.metric.ok .k, .metric.ok .s { color: var(--ok); }
+.metric.bad { background: var(--danger-soft); border-color: transparent; }
+.metric.bad .k, .metric.bad .s { color: var(--danger-text); }
+input[type="date"].input { min-height: 44px; font-size: 16px; }

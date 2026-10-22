@@ -642,3 +642,200 @@ test('raporty: miesięczny i roczny przygotowują treść do druku z poprawnymi 
   assert.equal(doc.querySelectorAll('#print-root .rp-table tbody tr').length, 12);
   assert.deepEqual(errors, []);
 });
+
+function addExpense(app, amount, note, date) {
+  const { w, doc } = app;
+  click(w, q(doc, '[data-action="exp-add"]'));
+  typeInto(w, q(doc, '#ex-amount'), amount);
+  if (note !== undefined) typeInto(w, q(doc, '#ex-note'), note);
+  if (date) q(doc, '#ex-date').value = date;
+  click(w, q(doc, '[data-action="exp-save"]'));
+}
+
+test('wydatki: dodanie w widoku Dziś, wiele w jednym dniu, wynik w miesiącu, edycja, usuwanie i cofanie', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc, errors } = app;
+  typeInto(w, q(doc, '#amount-input'), '2000');
+  click(w, q(doc, '[data-action="today-save"]'));
+  await tick();
+
+  click(w, q(doc, '[data-action="exp-add"]'));
+  assert.equal(q(doc, '#ex-date').value, today, 'domyślnie wybrany dzień');
+  // błędne dane nie zapisują
+  typeInto(w, q(doc, '#ex-amount'), '');
+  click(w, q(doc, '[data-action="exp-save"]'));
+  assert.ok(q(doc, '#ex-hint.err'));
+  typeInto(w, q(doc, '#ex-amount'), '0');
+  click(w, q(doc, '[data-action="exp-save"]'));
+  assert.match(text(doc, '#ex-hint'), /większą od zera/);
+  assert.equal(Core.countExpenses(w.__utarg.state.data), 0);
+  typeInto(w, q(doc, '#ex-amount'), '5000');
+  assert.equal(text(doc, '#ex-hint'), '= 5' + NB + '000,00' + NB + 'zł');
+  click(w, q(doc, '[data-action="exp-tag"][data-tag="goods"]'));
+  assert.equal(q(doc, '#ex-note').value, 'towar');
+  typeInto(w, q(doc, '#ex-note'), 'Zatowarowanie - hurtownia');
+  assert.equal(q(doc, '[data-tag="goods"]').getAttribute('aria-pressed'), 'true');
+  click(w, q(doc, '[data-action="exp-save"]'));
+  await tick();
+  assert.equal(q(doc, '.sheet'), null, 'okno zamknięte');
+  const list1 = Core.listExpenses(w.__utarg.state.data);
+  assert.equal(list1.length, 1);
+  assert.equal(list1[0].a, 500000);
+  assert.equal(list1[0].d, today);
+  assert.match(text(doc, '#view'), /Zatowarowanie - hurtownia/);
+  // utarg nietknięty, w kafelku miesiąca wynik (strata 3000 zł)
+  assert.equal(w.__utarg.state.data.days[today].a, 200000);
+  assert.match(text(doc, '#view'), /Wydatki −5.000,00.zł · strata 3.000,00.zł/);
+
+  // drugi wydatek tego samego dnia
+  addExpense(app, '123,45', 'prąd');
+  await tick();
+  assert.equal(Core.listExpenses(w.__utarg.state.data, today, today).length, 2);
+  assert.match(text(doc, '#view'), /Razem wydatki/);
+
+  // edycja pierwszego
+  click(w, doc.querySelectorAll('[data-action="exp-edit"]')[0]);
+  assert.equal(q(doc, '#ex-amount').value, '5000');
+  typeInto(w, q(doc, '#ex-amount'), '4500');
+  click(w, q(doc, '[data-action="exp-save"]'));
+  await tick();
+  assert.equal(Core.expenseTotal(w.__utarg.state.data), 450000 + 12345);
+  // cofnięcie edycji
+  click(w, q(doc, '[data-action="toast-undo"]'));
+  await tick();
+  assert.equal(Core.expenseTotal(w.__utarg.state.data), 500000 + 12345);
+
+  // usunięcie i cofnięcie
+  click(w, doc.querySelectorAll('[data-action="exp-edit"]')[1]);
+  click(w, q(doc, '[data-action="exp-delete"]'));
+  await tick();
+  assert.equal(Core.countExpenses(w.__utarg.state.data), 1);
+  click(w, q(doc, '[data-action="toast-undo"]'));
+  await tick();
+  assert.equal(Core.countExpenses(w.__utarg.state.data), 2);
+
+  // widok miesiąca: wiersz dnia z wydatkiem, podsumowanie i zysk/strata
+  click(w, q(doc, '.tabbar [data-view="month"]'));
+  const mv = text(doc, '#view');
+  assert.match(mv, /Wydatki w miesiącu/);
+  assert.match(mv, /Strata miesiąca/);
+  assert.match(mv, /−5.123,45.zł/);
+  assert.ok(q(doc, '.hero-fin'));
+  // widok roku
+  click(w, q(doc, '.tabbar [data-view="year"]'));
+  assert.match(text(doc, '#view'), /Wydatki −5.123,45.zł.*Strata 3.123,45.zł/);
+  click(w, q(doc, '[data-action="year-mode"][data-mode="months"]'));
+  assert.match(text(doc, '#view'), /Strata roku/);
+  assert.deepEqual(errors, []);
+});
+
+test('wydatki: data wsteczna i blokada daty z przyszłości; wydatek w dniu bez utargu', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc } = app;
+  const past = Core.addDays(today, -3);
+  addExpense(app, '300', 'czynsz', past);
+  await tick();
+  assert.equal(Core.listExpenses(w.__utarg.state.data)[0].d, past);
+  // wydatek nie liczy się jako wpis dnia – dzień nadal „bez wpisu”
+  assert.equal(Core.getDay(w.__utarg.state.data, past), null);
+  click(w, q(doc, '[data-action="exp-add"]'));
+  typeInto(w, q(doc, '#ex-amount'), '10');
+  q(doc, '#ex-date').value = Core.addDays(today, 2);
+  click(w, q(doc, '[data-action="exp-save"]'));
+  assert.match(text(doc, '#ex-hint'), /poprawną datę/);
+  assert.equal(Core.countExpenses(w.__utarg.state.data), 1);
+});
+
+test('ANALIZA w aplikacji: wydatki liczone osobno, dzień z zatowarowaniem nie jest „nieopłacalny”', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc, errors } = app;
+  // 20 dni po ~1000 zł; koszt otwarcia 300 zł; jeden dzień z ogromnym wydatkiem na towar
+  for (let i = 1; i <= 20; i++) await w.__utarg.submitDay(Core.addDays(today, -i), '1000', false, null);
+  const st = w.__utarg.state;
+  st.settings.openCost = 30000;
+  addExpense(app, '9000', 'zatowarowanie', Core.addDays(today, -5));
+  await tick();
+  click(w, q(doc, '.tabbar [data-view="analysis"]'));
+  const v = text(doc, '#view');
+  assert.match(v, /Wydatki i wynik/);
+  assert.match(v, /Towar/);
+  assert.match(v, /nie wpływają na ocenę dni/);
+  assert.match(v, /Wydatki w okresie/);
+  // nic nie twierdzi, że otwarcie się nie opłaca
+  assert.doesNotMatch(v, /niższy niż koszt otwarcia|poniżej kosztu otwarcia/);
+  const an = Core.analyze(st.data, { today, from: Core.addDays(today, -89), openCost: 30000 });
+  assert.equal(an.belowCost, 0);
+  assert.equal(an.expTotal, 900000);
+  assert.equal(doc.querySelectorAll('[style]').length, 0);
+  assert.deepEqual(errors, []);
+});
+
+test('wydatki: kopia na GitHub zawiera wydatki i scala się z drugim urządzeniem', async () => {
+  const gh = fakeGithub();
+  // „drugie urządzenie” już wysłało utarg i wydatek
+  let remote = Core.emptyData();
+  remote = Core.setDay(remote, Core.addDays(today, -1), 150000, false, 1000);
+  remote = Core.setExpense(remote, 'zdalny1', Core.addDays(today, -1), 70000, 'prąd', 1001);
+  gh.file = { text: Core.serialize(remote), sha: 'sha0' };
+  const app = boot({ fetch: gh.fetch });
+  await tick(60);
+  const { w, doc, errors } = app;
+  addExpense(app, '200', 'lokalny');
+  await tick();
+  click(w, q(doc, '.tabbar [data-view="settings"]'));
+  typeInto(w, q(doc, '#repo-input'), 'jan/utarg-dane');
+  typeInto(w, q(doc, '#token-input'), 'tok');
+  click(w, q(doc, '[data-action="sync-connect"]'));
+  await tick(400);
+  const uploaded = Core.parseSerialized(gh.file.text).data;
+  assert.equal(Core.countExpenses(uploaded), 2);
+  assert.ok(Core.getExpense(uploaded, 'zdalny1'));
+  assert.equal(Core.countEntries(uploaded), 1);
+  // i lokalnie widać wydatek z drugiego urządzenia
+  assert.equal(Core.countExpenses(w.__utarg.state.data), 2);
+  assert.match(w.localStorage.getItem('utarg.data.v1'), /"exp": \{/);
+  assert.deepEqual(errors, []);
+});
+
+test('wydatki: plik kopii z wydatkami przy wczytywaniu i eksport CSV wydatków', async () => {
+  const src = Core.setExpense(Core.setDay(Core.emptyData(), Core.addDays(today, -1), 100, false, 5), 'abc', Core.addDays(today, -1), 4200, 'ZUS', 6);
+  const app = boot();
+  await tick(60);
+  const { w, doc } = app;
+  click(w, q(doc, '.tabbar [data-view="settings"]'));
+  const input = q(doc, '#import-file');
+  Object.defineProperty(input, 'files', { value: [new w.File([Core.serialize(src)], 'kopia.json', { type: 'application/json' })], configurable: true });
+  input.dispatchEvent(new w.Event('change', { bubbles: true }));
+  await tick(100);
+  assert.match(text(doc, '#cf-text'), /Nowych lub nowszych wpisów: 2/);
+  click(w, q(doc, '[data-action="confirm-yes"]'));
+  await tick(50);
+  assert.equal(Core.countExpenses(w.__utarg.state.data), 1);
+  assert.ok(q(doc, '[data-action="export-exp-csv"]'));
+  assert.match(text(doc, '#view'), /wydatków: 1/);
+});
+
+test('raporty: miesięczny i roczny zawierają wydatki i wynik', async () => {
+  const app = boot();
+  await tick(60);
+  const { w, doc } = app;
+  await w.__utarg.submitDay(today, '1000', false, null);
+  addExpense(app, '2500', 'czynsz');
+  await tick();
+  w.print = () => {};
+  click(w, q(doc, '.tabbar [data-view="month"]'));
+  click(w, q(doc, '[data-action="print-month"]'));
+  const rep = text(doc, '#print-root');
+  assert.match(rep, /Wydatki/);
+  assert.match(rep, /Strata miesiąca/);
+  assert.ok(rep.includes('−2' + NB + '500,00' + NB + 'zł'));
+  w.dispatchEvent(new w.Event('afterprint'));
+  click(w, q(doc, '.tabbar [data-view="year"]'));
+  click(w, q(doc, '[data-action="print-year"]'));
+  const yr = text(doc, '#print-root');
+  assert.match(yr, /Wynik/);
+  assert.ok(yr.includes('−1' + NB + '500,00' + NB + 'zł'));
+});

@@ -5,7 +5,7 @@
   var C = window.UtargCore;
   var Store = window.UtargStore;
   var Sync = window.UtargSync;
-  var APP_VERSION = '1.1.0';
+  var APP_VERSION = '1.2.0';
 
   /* ---------- Narzędzia ---------- */
 
@@ -37,6 +37,7 @@
     list: '<path d="M8.5 7h11M8.5 12h11M8.5 17h11M4.6 7h.01M4.6 12h.01M4.6 17h.01"/>',
     table: '<rect x="3.5" y="5" width="17" height="14" rx="3"/><path d="M3.5 10h17M9.5 5v14"/>',
     shield: '<path d="M12 3.5l7 2.6v5.4c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6.1z"/><path d="M9 12.2l2.2 2.2 3.8-4"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
     refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/>',
     trend: '<path d="M4 17l5-5.5 3.5 3.5L20 7M15 7h5v5"/>',
     note: '<path d="M6 4.5h12a1.5 1.5 0 0 1 1.5 1.5v9.5L14.5 20.5H6A1.5 1.5 0 0 1 4.5 19V6A1.5 1.5 0 0 1 6 4.5zM14.5 20.5v-4a1 1 0 0 1 1-1h4M8 9h8M8 12.5h5"/>',
@@ -175,6 +176,141 @@
     commit(C.setDay(state.data, key, null, false, Date.now()));
     showToast('Wpis usunięty', { undo: function () { restoreDay(key, before); } });
     refresh(true);
+  }
+
+  /* ---------- Wydatki ---------- */
+
+  function newExpenseId() {
+    return 'e' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  function minus(g) { return '−' + C.formatMoney(g); }
+
+  /** Podpis „Wydatki … · wynik …” (pusty, gdy nie ma wydatków). */
+  function finLine(expenses, profit) {
+    if (!expenses) return '';
+    return '<div class="s">Wydatki ' + minus(expenses) + ' · ' + (profit >= 0 ? 'zysk ' : 'strata ') + C.formatMoney(Math.abs(profit)) + '</div>';
+  }
+
+  function openExpense(id, key) {
+    var rec = id ? C.getExpense(state.data, id) : null;
+    if (id && !rec) return;
+    var k = rec ? rec.d : key;
+    if (!C.parseKey(k) || k > C.todayKey()) k = C.todayKey();
+    lastFocus = document.activeElement;
+    state.editor = { kind: 'exp', id: id || null, key: k };
+    try { history.pushState({ utargModal: true }, ''); } catch (e) { /* ignoruj */ }
+    renderModal();
+    var inp = $('ex-amount');
+    if (inp) { inp.focus(); inp.select(); }
+  }
+
+  function expChips(note) {
+    var active = C.expCatsOf(note);
+    return C.EXP_CATS.map(function (t) {
+      return '<button type="button" class="chip tiny" data-action="exp-tag" data-tag="' + t.id + '" aria-pressed="' + (active.indexOf(t.id) >= 0) + '">' + t.label + '</button>';
+    }).join('');
+  }
+
+  function expModalHtml(e) {
+    var rec = e.id ? C.getExpense(state.data, e.id) : null;
+    return '<div class="backdrop" id="ed-backdrop"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="ed-title">' +
+      '<div class="grab"></div><h2 id="ed-title">' + (rec ? 'Wydatek' : 'Nowy wydatek') + '</h2>' +
+      '<p class="sub">' + (rec ? 'Popraw albo usuń wydatek.' : 'Wpisz kwotę i krótki opis, np. zatowarowanie albo prąd.') + '</p>' +
+      '<div class="amount-field"><input id="ex-amount" class="amount-input" type="text" inputmode="decimal" autocomplete="off" autocapitalize="off" spellcheck="false" ' +
+      'enterkeyhint="done" placeholder="0,00" aria-label="Kwota wydatku w złotych" value="' + (rec ? esc(C.toInputString(rec.a)) : '') + '">' +
+      '<span class="amount-cur" aria-hidden="true">zł</span></div>' +
+      '<p class="hero-hint" id="ex-hint"></p>' +
+      '<div class="note-field"><label for="ex-note">Opis (opcjonalnie)</label>' +
+      '<input id="ex-note" class="input" type="text" maxlength="' + C.NOTE_MAX + '" autocomplete="off" placeholder="np. zatowarowanie, prąd, czynsz" value="' + esc(rec ? rec.n || '' : '') + '">' +
+      '<div class="chips" id="ex-tags">' + expChips(rec ? rec.n || '' : '') + '</div></div>' +
+      '<div class="note-field"><label for="ex-date">Data wydatku</label>' +
+      '<input id="ex-date" class="input" type="date" min="' + C.MIN_YEAR + '-01-01" max="' + C.todayKey() + '" value="' + e.key + '"></div>' +
+      '<div class="actions"><button class="btn primary block" data-action="exp-save">' + icon('check') + 'Zapisz wydatek</button>' +
+      '<div class="row2"><button class="btn ghost" data-action="editor-cancel">Anuluj</button>' +
+      (rec ? '<button class="btn danger" data-action="exp-delete">' + icon('trash') + 'Usuń</button>' : '<span></span>') + '</div></div>' +
+      '</div></div>';
+  }
+
+  function syncExpChips() {
+    var inp = $('ex-note'), box = $('ex-tags');
+    if (inp && box) box.innerHTML = expChips(inp.value);
+  }
+
+  function toggleExpTag(id) {
+    var inp = $('ex-note');
+    if (!inp) return;
+    var cat = C.EXP_CATS.filter(function (t) { return t.id === id; })[0];
+    if (!cat) return;
+    var parts = inp.value.split(/[,;]/).map(function (p) { return p.trim(); }).filter(Boolean);
+    if (C.expCatsOf(inp.value).indexOf(id) >= 0) {
+      parts = parts.filter(function (p) { return C.expCatsOf(p).indexOf(id) < 0; });
+    } else {
+      parts.push(cat.label.toLowerCase());
+    }
+    inp.value = C.normalizeNote(parts.join(', '));
+    syncExpChips();
+  }
+
+  function restoreExpense(id, before) {
+    var cur = state.data.exp && state.data.exp[id];
+    if (before) commit(C.setExpense(state.data, id, before.d, before.a, before.n, Date.now()));
+    else if (cur) commit(C.setExpense(state.data, id, cur.d, null, '', Date.now()));
+    showToast('Cofnięto zmianę');
+    refresh(true);
+  }
+
+  function expenseSave() {
+    var e = state.editor;
+    if (!e || e.kind !== 'exp') return;
+    var hint = $('ex-hint');
+    var r = C.parseAmount($('ex-amount').value);
+    if (!r.ok) { setHint(hint, r.error, true); $('ex-amount').focus(); return; }
+    if (r.value < 1) { setHint(hint, 'Wpisz kwotę wydatku większą od zera.', true); $('ex-amount').focus(); return; }
+    var date = $('ex-date').value;
+    if (!C.parseKey(date) || date > C.todayKey()) { setHint(hint, 'Wybierz poprawną datę (nie z przyszłości).', true); return; }
+    var id = e.id || newExpenseId();
+    var prev = C.getExpense(state.data, id);
+    var before = prev ? { d: prev.d, a: prev.a, n: prev.n || '' } : null;
+    try {
+      commit(C.setExpense(state.data, id, date, r.value, $('ex-note').value, Date.now()));
+    } catch (err) {
+      showToast('Nie udało się zapisać wydatku. Spróbuj ponownie.', { kind: 'error' });
+      return;
+    }
+    closeEditor();
+    showToast('Zapisano wydatek ' + C.formatMoney(r.value), { undo: function () { restoreExpense(id, before); } });
+    refresh(true);
+  }
+
+  function deleteExpense() {
+    var e = state.editor;
+    if (!e || e.kind !== 'exp' || !e.id) return;
+    var prev = C.getExpense(state.data, e.id);
+    if (!prev) return;
+    var id = e.id;
+    var before = { d: prev.d, a: prev.a, n: prev.n || '' };
+    closeEditor();
+    commit(C.setExpense(state.data, id, prev.d, null, '', Date.now()));
+    showToast('Wydatek usunięty', { undo: function () { restoreExpense(id, before); } });
+    refresh(true);
+  }
+
+  function expRow(e) {
+    var cat = C.expCategoryOf(e.n);
+    return '<button class="row" data-action="exp-edit" data-id="' + esc(e.id) + '"><div class="mid"><b>' + esc(e.n || C.expCatLabel(cat)) + '</b>' +
+      '<span class="note">' + esc(e.n ? C.expCatLabel(cat) + ' · ' : '') + esc(dayLabel(e.d)) + '</span></div><div class="amt num neg">' + minus(e.a) + '</div></button>';
+  }
+
+  /** Lista wydatków z przyciskiem dodawania. */
+  function expensesBlock(title, list, addKey) {
+    var h = '<div><div class="section-head"><h2 class="section-title">' + esc(title) + '</h2>' +
+      '<button class="btn small" data-action="exp-add" data-key="' + addKey + '">' + icon('plus') + 'Dodaj wydatek</button></div>';
+    if (!list.length) return h + '<p class="help">Brak wydatków.</p></div>';
+    var sum = list.reduce(function (s2, e) { return s2 + e.a; }, 0);
+    h += '<div class="list">' + list.map(expRow).join('');
+    if (list.length > 1) h += '<div class="row total"><div class="mid">Razem wydatki</div><div class="amt num neg">' + minus(sum) + '</div></div>';
+    return h + '</div></div>';
   }
 
   /* ---------- Teksty pomocnicze ---------- */
@@ -369,10 +505,12 @@
 
     h += '<div class="grid2">' +
       '<button class="metric" data-action="goto-month" data-y="' + p.y + '" data-m="' + p.m + '"><div class="k">' + cap(C.MONTHS[p.m]) + ', razem</div>' +
-      '<div class="v num">' + C.formatMoney(ms.total) + '</div><div class="s">' + ms.open + ' ' + daysWord(ms.open) + ' z utargiem</div></button>' +
+      '<div class="v num">' + C.formatMoney(ms.total) + '</div><div class="s">' + ms.open + ' ' + daysWord(ms.open) + ' z utargiem</div>' + finLine(ms.expenses, ms.profit) + '</button>' +
       '<button class="metric gold" data-action="goto-year" data-y="' + p.y + '"><div class="k">Rok ' + p.y + ', razem</div>' +
-      '<div class="v num">' + C.formatMoney(ys.total) + '</div><div class="s">' + ys.open + ' ' + daysWord(ys.open) + ' z utargiem</div></button>' +
+      '<div class="v num">' + C.formatMoney(ys.total) + '</div><div class="s">' + ys.open + ' ' + daysWord(ys.open) + ' z utargiem</div>' + finLine(ys.expenses, ys.profit) + '</button>' +
       '</div>';
+
+    h += expensesBlock('Wydatki · ' + dayLabel(key), C.listExpenses(state.data, key, key), key);
 
     var recent = C.recentEntries(state.data, today, 5);
     h += '<div><h2 class="section-title">Ostatnie wpisy</h2>';
@@ -393,6 +531,12 @@
       '<button class="icon-btn" data-action="' + prevAction + '" aria-label="' + prevLabel + '">' + icon('chevL') + '</button>' +
       '<h1 class="label big">' + label + '</h1>' +
       '<button class="icon-btn" data-action="' + nextAction + '" aria-label="' + nextLabel + '">' + icon('chevR') + '</button></div>';
+  }
+
+  /** Wydatki i wynik w karcie głównej (miesiąc / rok). */
+  function heroFin(expenses, profit) {
+    if (!expenses) return '';
+    return '<div class="hero-fin"><span>Wydatki <b>' + minus(expenses) + '</b></span><span>' + (profit >= 0 ? 'Zysk' : 'Strata') + ' <b>' + C.formatMoney(Math.abs(profit)) + '</b></span></div>';
   }
 
   function monthView() {
@@ -420,10 +564,13 @@
         '<div><b class="num">' + ms.open + '</b><span>' + daysWord(ms.open) + ' z utargiem</span></div>' +
         '<div><b class="num">' + ms.closed + '</b><span>' + C.plural(ms.closed, 'dzień zamknięty', 'dni zamknięte', 'dni zamkniętych') + '</span></div>' +
         '<div><b class="num">' + C.formatGrosze(ms.avg) + '</b><span>średnio dziennie, zł</span></div>' +
-      '</div></section>';
+      '</div>' + heroFin(ms.expenses, ms.profit) + '</section>';
 
     h += missingBanner(pastMissing);
 
+    var monthExp = C.listExpenses(state.data, C.dateKey(y, m, 1), C.dateKey(y, m, ms.days));
+    var expByDay = {};
+    monthExp.forEach(function (e) { (expByDay[e.d] = expByDay[e.d] || []).push(e); });
     h += '<div class="list">';
     for (var d = 1; d <= ms.days; d++) {
       var key = C.dateKey(y, m, d);
@@ -451,10 +598,23 @@
       } else {
         mid = '<div class="mid">—</div>';
       }
+      var dayExp = expByDay[key];
+      if (dayExp) {
+        var dsum = dayExp.reduce(function (acc, e) { return acc + e.a; }, 0);
+        var ddesc = dayExp.map(function (e) { return e.n || C.expCatLabel(C.expCategoryOf(e.n)); }).join(', ');
+        mid = mid.replace(/<\/div>$/, '<span class="exp-line">' + minus(dsum) + ' · ' + esc(ddesc) + '</span></div>');
+      }
       h += '<button class="' + cls + '" data-action="open-editor" data-key="' + key + '" aria-label="' + esc(cap(C.longDate(key))) + '">' + dh + mid + right + '</button>';
     }
     h += '<div class="row total"><div class="d"></div><div class="mid">Suma — ' + C.MONTHS[m] + '</div><div class="amt num">' + C.formatMoney(ms.total) + '</div></div>';
-    h += '</div>' + printButton('print-month') + '</div>';
+    if (ms.expenses) {
+      h += '<div class="row total"><div class="d"></div><div class="mid">Wydatki</div><div class="amt num neg">' + minus(ms.expenses) + '</div></div>';
+      h += '<div class="row total"><div class="d"></div><div class="mid">' + (ms.profit >= 0 ? 'Zysk' : 'Strata') + ' miesiąca</div><div class="amt num ' + (ms.profit >= 0 ? 'pos' : 'neg') + '">' + C.formatMoney(ms.profit) + '</div></div>';
+    }
+    h += '</div>';
+    var addKey = cur.y === y && cur.m === m ? today : (C.dateKey(y, m, ms.days) < today ? C.dateKey(y, m, ms.days) : today);
+    h += expensesBlock('Wydatki w miesiącu', monthExp, addKey);
+    h += printButton('print-month') + '</div>';
     return h;
   }
 
@@ -539,7 +699,7 @@
         '<div><b class="num">' + ys.open + '</b><span>' + daysWord(ys.open) + ' z utargiem</span></div>' +
         '<div><b class="num">' + C.formatGrosze(ys.avg) + '</b><span>średnio dziennie, zł</span></div>' +
         '<div><b>' + (best ? cap(C.MONTHS_SHORT[best.m]) : '—') + '</b><span>najlepszy miesiąc</span></div>' +
-      '</div></section>';
+      '</div>' + heroFin(ys.expenses, ys.profit) + '</section>';
 
     if (state.yearMode === 'table') {
       h += '<p class="help">Dotknij dowolnej komórki, żeby wpisać lub poprawić kwotę. Przesuń w bok, aby zobaczyć kolejne miesiące.</p>';
@@ -552,10 +712,16 @@
       ys.months.forEach(function (s, i) {
         var pct = max > 0 ? Math.round(s.total / max * 100) : 0;
         h += '<button class="row mrow" data-action="goto-month" data-y="' + y + '" data-m="' + i + '"><div class="mid"><b>' + C.MONTHS[i] + '</b>' +
-          '<svg class="mini" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="track" width="100" height="6" rx="3"/><rect class="fill" width="' + pct + '" height="6" rx="3"/></svg></div>' +
+          '<svg class="mini" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="track" width="100" height="6" rx="3"/><rect class="fill" width="' + pct + '" height="6" rx="3"/></svg>' +
+          (s.expenses ? '<span class="note">Wydatki ' + minus(s.expenses) + ' · ' + (s.profit >= 0 ? 'zysk ' : 'strata ') + C.formatMoney(Math.abs(s.profit)) + '</span>' : '') + '</div>' +
           compactStatus(s) + '<div class="amt num">' + C.formatMoney(s.total) + '</div></button>';
       });
-      h += '<div class="row total"><div class="mid">Razem — rok ' + y + '</div><div class="amt num">' + C.formatMoney(ys.total) + '</div></div></div>';
+      h += '<div class="row total"><div class="mid">Razem — rok ' + y + '</div><div class="amt num">' + C.formatMoney(ys.total) + '</div></div>';
+      if (ys.expenses) {
+        h += '<div class="row total"><div class="mid">Wydatki</div><div class="amt num neg">' + minus(ys.expenses) + '</div></div>';
+        h += '<div class="row total"><div class="mid">' + (ys.profit >= 0 ? 'Zysk' : 'Strata') + ' roku</div><div class="amt num ' + (ys.profit >= 0 ? 'pos' : 'neg') + '">' + C.formatMoney(ys.profit) + '</div></div>';
+      }
+      h += '</div>';
     }
     h += printButton('print-year') + '</div>';
     return h;
@@ -621,14 +787,18 @@
     Object.keys(state.data.days).forEach(function (k) {
       if (state.data.days[k].a !== null) years[k.slice(0, 4)] = 1;
     });
+    var expYears = {};
+    C.listExpenses(state.data).forEach(function (e) { expYears[e.d.slice(0, 4)] = 1; });
     var list = Object.keys(years).sort().reverse().slice(0, 4);
     if (!list.length) list = [String(state.today.slice(0, 4))];
     var n = C.countEntries(state.data);
-    var h = '<div class="card"><h2>Twoje dane</h2><p class="help">Zapisanych wpisów: <b>' + n + '</b>. Plik kopii możesz przechowywać dodatkowo na dysku lub w poczcie. „Wczytaj z pliku” przyjmuje kopię (JSON) oraz historię z CSV: tabelę wyeksportowaną stąd albo listę „data;kwota” (np. z Excela). Istniejące wpisy nie są nadpisywane.</p>' +
+    var h = '<div class="card"><h2>Twoje dane</h2><p class="help">Zapisanych wpisów: <b>' + n + '</b>, wydatków: <b>' + C.countExpenses(state.data) + '</b>. Plik kopii możesz przechowywać dodatkowo na dysku lub w poczcie. „Wczytaj z pliku” przyjmuje kopię (JSON) oraz historię z CSV: tabelę wyeksportowaną stąd albo listę „data;kwota” (np. z Excela). Istniejące wpisy nie są nadpisywane.</p>' +
       '<div class="btn-row"><button class="btn" data-action="export-json">' + icon('download') + 'Pobierz kopię (JSON)</button>' +
       '<button class="btn" data-action="import-pick">' + icon('upload') + 'Wczytaj z pliku</button></div>' +
       '<div class="btn-row">' + list.map(function (y) {
         return '<button class="btn small" data-action="export-csv" data-y="' + y + '">' + icon('download') + 'Tabela ' + y + ' (CSV)</button>';
+      }).join('') + Object.keys(expYears).sort().reverse().slice(0, 4).map(function (y) {
+        return '<button class="btn small" data-action="export-exp-csv" data-y="' + y + '">' + icon('download') + 'Wydatki ' + y + ' (CSV)</button>';
       }).join('') + '</div>' +
       '<input id="import-file" class="hidden-file" type="file" accept=".json,.csv,application/json,text/csv,text/plain" tabindex="-1" aria-hidden="true"></div>';
     return h;
@@ -648,7 +818,7 @@
       '<div class="chips">' + order.map(function (d) {
         return '<button class="chip" data-action="weekday" data-d="' + d + '" aria-pressed="' + (st.closedWeekdays.indexOf(d) >= 0) + '">' + cap(C.WEEKDAYS[d]) + '</button>';
       }).join('') + '</div></div>';
-    h += '<div class="card" id="cost-card"><h2>Koszt otwarcia sklepu</h2><p class="help">Opcjonalnie. Dzienny koszt, poniżej którego otwarcie się nie opłaca (np. prąd, ogrzewanie, pensja). Analiza pokaże wtedy dni i okoliczności z utargiem niższym niż ten koszt.</p>' +
+    h += '<div class="card" id="cost-card"><h2>Koszt otwarcia sklepu</h2><p class="help">Opcjonalnie. Dzienny koszt, poniżej którego otwarcie się nie opłaca (np. pensja pracownika, opłata za dzień). Wpisuj tu tylko koszty codzienne. Towar, prąd, czynsz i inne jednorazowe rachunki dodawaj jako wydatki – nie wpływają one na ocenę dni. Analiza pokaże dni i okoliczności z utargiem niższym niż ten koszt.</p>' +
       '<div class="amount-field plain"><input id="cost-input" class="input" type="text" inputmode="decimal" autocomplete="off" placeholder="np. 300 (puste = wyłączone)" aria-label="Dzienny koszt otwarcia w złotych" value="' + (st.openCost ? esc(C.toInputString(st.openCost)) : '') + '"><span class="amount-cur" aria-hidden="true">zł</span></div>' +
       '<p class="hero-hint err" id="cost-hint" role="alert"></p></div>';
     h += dataCard();
@@ -708,6 +878,27 @@
       var cy = base - Math.round(o.cost / max * maxH);
       svg += '<line class="cost" x1="6" y1="' + cy + '" x2="354" y2="' + cy + '"/>';
     }
+    return svg + '</svg>';
+  }
+
+  /** Wykres wyniku (zysk w górę, strata w dół). items: [{ label, value }]. */
+  function resultSvg(items, aria) {
+    var W = 360, top = 16, bottom = 150;
+    var maxPos = 0, maxNeg = 0;
+    items.forEach(function (it) { if (it.value > maxPos) maxPos = it.value; if (-it.value > maxNeg) maxNeg = -it.value; });
+    var span = maxPos + maxNeg;
+    var zero = span === 0 ? bottom : Math.round(top + (maxPos / span) * (bottom - top));
+    var scale = span === 0 ? 0 : (bottom - top) / span;
+    var n = items.length, slot = (W - 12) / n, bw = Math.min(30, Math.round(slot * 0.62));
+    var svg = '<svg class="chart static" viewBox="0 0 360 180" role="img" aria-label="' + esc(aria) + '">';
+    svg += '<line class="base" x1="6" y1="' + zero + '" x2="354" y2="' + zero + '"/>';
+    items.forEach(function (it, i) {
+      var x = Math.round(6 + i * slot + (slot - bw) / 2);
+      var hgt = it.value === 0 ? 0 : Math.max(3, Math.round(Math.abs(it.value) * scale));
+      if (it.value > 0) svg += '<rect class="bar on" x="' + x + '" y="' + (zero - hgt) + '" width="' + bw + '" height="' + hgt + '" rx="4"/>';
+      else if (it.value < 0) svg += '<rect class="bar low" x="' + x + '" y="' + zero + '" width="' + bw + '" height="' + hgt + '" rx="4"/>';
+      svg += '<text x="' + (x + bw / 2) + '" y="172" text-anchor="middle">' + esc(it.label) + '</text>';
+    });
     return svg + '</svg>';
   }
 
@@ -814,9 +1005,32 @@
     }
     h += '</div>';
 
+    // Wydatki i wynik
+    h += '<div class="card"><h2>Wydatki i wynik</h2>';
+    var anyExp = an.expTotal > 0 || tr.some(function (x) { return x.expenses > 0; });
+    if (!anyExp) {
+      h += '<p class="help">Wpisuj wydatki (towar, prąd, czynsz…) przyciskiem „Dodaj wydatek” w widoku Dziś lub Miesiąc. Tutaj zobaczysz zysk lub stratę oraz na co idą pieniądze.</p>';
+    } else {
+      h += '<div class="grid2 tight"><div class="metric"><div class="k">Wydatki w okresie</div><div class="v num">' + minus(an.expTotal) + '</div><div class="s">' + an.expCount + ' ' + C.plural(an.expCount, 'wydatek', 'wydatki', 'wydatków') + '</div></div>' +
+        '<div class="metric ' + (an.result >= 0 ? 'ok' : 'bad') + '"><div class="k">' + (an.result >= 0 ? 'Zysk' : 'Strata') + ' w okresie</div><div class="v num">' + C.formatMoney(Math.abs(an.result)) + '</div><div class="s">utarg minus wydatki</div></div></div>';
+      if (an.expCats.length) {
+        h += '<table class="mini-table"><thead><tr><th scope="col">Rodzaj wydatku</th><th scope="col">Suma</th><th scope="col">Udział</th></tr></thead><tbody>';
+        an.expCats.forEach(function (c) {
+          h += '<tr><th scope="row">' + esc(c.label) + '<span class="sub-note">' + c.n + ' ' + C.plural(c.n, 'wydatek', 'wydatki', 'wydatków') + '</span></th><td class="num">' + C.formatMoney(c.total) + '</td><td class="num">' + Math.round(c.total / an.expTotal * 100) + '%</td></tr>';
+        });
+        h += '</tbody></table>';
+      }
+      if (an.breakEven > 0 && an.openDays >= 7) {
+        h += '<p class="help">Aby przy wydatkach z tego okresu wyjść na zero, potrzeba średnio ok. <b>' + C.formatMoney(an.breakEven) + '</b> utargu na dzień z utargiem (teraz: ' + C.formatMoney(an.avg) + '). Im dłuższy okres, tym dokładniejszy wynik, bo rachunki płacone raz na kilka miesięcy rozkładają się w czasie.</p>';
+      }
+      h += '<h3 class="sub-title">Wynik miesięczny (ostatnie 12 miesięcy)</h3><div class="chart-box">' +
+        resultSvg(tr.map(function (x) { return { label: C.MONTHS_SHORT[x.m], value: x.profit }; }), 'Zysk lub strata w ostatnich 12 miesiącach') + '</div>';
+    }
+    h += '<p class="help">Wydatki są liczone osobno i nie wpływają na ocenę dni tygodnia, okoliczności ani kosztu otwarcia. Dzień z zatowarowaniem lub rachunkiem za prąd nie jest uznawany za nieopłacalny.</p></div>';
+
     // Koszt otwarcia
     if (!cost) {
-      h += '<div class="banner info">' + icon('info') + '<div class="grow"><strong>Czy otwarcie się opłaca?</strong>Podaj dzienny koszt otwarcia sklepu (np. prąd, ogrzewanie, pensja), a pokażę dni i okoliczności, w których utarg jest niższy.' +
+      h += '<div class="banner info">' + icon('info') + '<div class="grow"><strong>Czy otwarcie się opłaca?</strong>Podaj dzienny koszt otwarcia sklepu (tylko koszty codzienne, np. pensja), a pokażę dni i okoliczności, w których utarg jest niższy. Towar i rachunki wpisuj jako wydatki – nie wpływają na tę ocenę.' +
         '<div class="btn-row"><button class="btn small" data-action="goto-cost">Ustaw koszt otwarcia</button></div></div></div>';
     } else {
       h += '<p class="help center">Dzienny koszt otwarcia: <b>' + C.formatMoney(cost) + '</b>. <button class="linkish" data-action="goto-cost">Zmień</button></p>';
@@ -844,7 +1058,8 @@
       '<div><span>Dni z utargiem</span><b>' + ms.open + '</b></div>' +
       '<div><span>Dni zamknięte</span><b>' + ms.closed + '</b></div>' +
       '<div><span>Średnio dziennie</span><b>' + C.formatMoney(ms.avg) + '</b></div>' +
-      '<div><span>Najlepszy dzień</span><b>' + (ms.best ? ms.best.key.slice(8).replace(/^0/, '') + '. – ' + C.formatMoney(ms.best.a) : '—') + '</b></div></div>';
+      '<div><span>Najlepszy dzień</span><b>' + (ms.best ? ms.best.key.slice(8).replace(/^0/, '') + '. – ' + C.formatMoney(ms.best.a) : '—') + '</b></div>' +
+      (ms.expenses ? '<div><span>Wydatki</span><b>' + minus(ms.expenses) + '</b></div><div><span>' + (ms.profit >= 0 ? 'Zysk' : 'Strata') + '</span><b>' + C.formatMoney(Math.abs(ms.profit)) + '</b></div>' : '') + '</div>';
     h += '<table class="rp-table"><thead><tr><th>Dzień</th><th></th><th class="r">Utarg</th><th>Notatka</th></tr></thead><tbody>';
     for (var d = 1; d <= ms.days; d++) {
       var key = C.dateKey(y, m, d);
@@ -858,8 +1073,17 @@
       else amt = '—';
       h += '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td>' + d + '</td><td>' + C.WEEKDAYS_SHORT[wd] + '</td><td class="r">' + amt + '</td><td>' + note + '</td></tr>';
     }
-    h += '</tbody><tfoot><tr><td colspan="2">Suma</td><td class="r">' + C.formatMoney(ms.total) + '</td><td></td></tr></tfoot></table></div>';
-    return h;
+    h += '</tbody><tfoot><tr><td colspan="2">Suma</td><td class="r">' + C.formatMoney(ms.total) + '</td><td></td></tr></tfoot></table>';
+    var rexp = C.listExpenses(state.data, C.dateKey(y, m, 1), C.dateKey(y, m, ms.days));
+    if (rexp.length) {
+      h += '<h2 class="rp-sub">Wydatki</h2><table class="rp-table"><thead><tr><th>Data</th><th>Opis</th><th class="r">Kwota</th></tr></thead><tbody>';
+      rexp.forEach(function (e) {
+        h += '<tr><td>' + e.d.slice(8).replace(/^0/, '') + '.</td><td>' + esc(e.n || C.expCatLabel(C.expCategoryOf(e.n))) + '</td><td class="r">' + minus(e.a) + '</td></tr>';
+      });
+      h += '</tbody><tfoot><tr><td colspan="2">Razem wydatki</td><td class="r">' + minus(ms.expenses) + '</td></tr>' +
+        '<tr><td colspan="2">' + (ms.profit >= 0 ? 'Zysk' : 'Strata') + ' miesiąca (utarg minus wydatki)</td><td class="r">' + C.formatMoney(ms.profit) + '</td></tr></tfoot></table>';
+    }
+    return h + '</div>';
   }
 
   function yearReport(y) {
@@ -871,12 +1095,13 @@
       '<div><span>Dni z utargiem</span><b>' + ys.open + '</b></div>' +
       '<div><span>Dni zamknięte</span><b>' + ys.closed + '</b></div>' +
       '<div><span>Średnio dziennie</span><b>' + C.formatMoney(ys.avg) + '</b></div>' +
-      '<div><span>Najlepszy miesiąc</span><b>' + (best ? cap(C.MONTHS[best.m]) + ' – ' + C.formatMoney(best.total) : '—') + '</b></div></div>';
-    h += '<table class="rp-table"><thead><tr><th>Miesiąc</th><th class="r">Dni z utargiem</th><th class="r">Zamknięte</th><th class="r">Brak wpisu</th><th class="r">Średnio dziennie</th><th class="r">Suma</th></tr></thead><tbody>';
+      '<div><span>Najlepszy miesiąc</span><b>' + (best ? cap(C.MONTHS[best.m]) + ' – ' + C.formatMoney(best.total) : '—') + '</b></div>' +
+      (ys.expenses ? '<div><span>Wydatki</span><b>' + minus(ys.expenses) + '</b></div><div><span>' + (ys.profit >= 0 ? 'Zysk' : 'Strata') + '</span><b>' + C.formatMoney(Math.abs(ys.profit)) + '</b></div>' : '') + '</div>';
+    h += '<table class="rp-table"><thead><tr><th>Miesiąc</th><th class="r">Dni z utargiem</th><th class="r">Zamknięte</th><th class="r">Brak wpisu</th><th class="r">Średnio dziennie</th><th class="r">Utarg</th><th class="r">Wydatki</th><th class="r">Wynik</th></tr></thead><tbody>';
     ys.months.forEach(function (s) {
-      h += '<tr><td>' + cap(C.MONTHS[s.m]) + '</td><td class="r">' + s.open + '</td><td class="r">' + s.closed + '</td><td class="r">' + (s.missing.length || '') + '</td><td class="r">' + (s.open ? C.formatMoney(s.avg) : '') + '</td><td class="r">' + C.formatMoney(s.total) + '</td></tr>';
+      h += '<tr><td>' + cap(C.MONTHS[s.m]) + '</td><td class="r">' + s.open + '</td><td class="r">' + s.closed + '</td><td class="r">' + (s.missing.length || '') + '</td><td class="r">' + (s.open ? C.formatMoney(s.avg) : '') + '</td><td class="r">' + C.formatMoney(s.total) + '</td><td class="r">' + (s.expenses ? minus(s.expenses) : '') + '</td><td class="r">' + C.formatMoney(s.profit) + '</td></tr>';
     });
-    h += '</tbody><tfoot><tr><td>Razem</td><td class="r">' + ys.open + '</td><td class="r">' + ys.closed + '</td><td class="r">' + (ys.missing || '') + '</td><td class="r">' + (ys.open ? C.formatMoney(ys.avg) : '') + '</td><td class="r">' + C.formatMoney(ys.total) + '</td></tr></tfoot></table></div>';
+    h += '</tbody><tfoot><tr><td>Razem</td><td class="r">' + ys.open + '</td><td class="r">' + ys.closed + '</td><td class="r">' + (ys.missing || '') + '</td><td class="r">' + (ys.open ? C.formatMoney(ys.avg) : '') + '</td><td class="r">' + C.formatMoney(ys.total) + '</td><td class="r">' + (ys.expenses ? minus(ys.expenses) : '') + '</td><td class="r">' + C.formatMoney(ys.profit) + '</td></tr></tfoot></table></div>';
     return h;
   }
 
@@ -966,7 +1191,7 @@
     if (!C.parseKey(key) || key > C.todayKey()) return;
     var rec = C.getDay(state.data, key);
     lastFocus = document.activeElement;
-    state.editor = { key: key, closed: !!(rec && rec.c) };
+    state.editor = { kind: 'day', key: key, closed: !!(rec && rec.c) };
     try { history.pushState({ utargModal: true }, ''); } catch (e) { /* ignoruj */ }
     renderModal();
     var inp = $('ed-amount');
@@ -1022,6 +1247,7 @@
     var root = $('modal-root');
     if (!state.editor) { root.innerHTML = ''; return; }
     var e = state.editor;
+    if (e.kind === 'exp') { root.innerHTML = expModalHtml(e); return; }
     var rec = C.getDay(state.data, e.key);
     root.innerHTML =
       '<div class="backdrop" id="ed-backdrop"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="ed-title">' +
@@ -1043,6 +1269,7 @@
   function editorSave() {
     var e = state.editor;
     if (!e) return;
+    if (e.kind === 'exp') { expenseSave(); return; }
     var closed = $('ed-closed').checked;
     submitDay(e.key, $('ed-amount').value, closed, { hintEl: $('ed-hint'), inputEl: $('ed-amount') }, $('ed-note') ? $('ed-note').value : undefined).then(function (ok) {
       if (ok) closeEditor();
@@ -1163,7 +1390,7 @@
       var raw = String(reader.result);
       if (/\.csv$/i.test(file.name || '') || !/^\s*\{/.test(raw.replace(/^\ufeff/, ''))) { importCsv(raw, file.name || ''); return; }
       var parsed = C.parseSerialized(raw);
-      if (parsed.error || C.countEntries(parsed.data) + Object.keys(parsed.data.days).length === 0) {
+      if (parsed.error || C.countEntries(parsed.data) + Object.keys(parsed.data.days).length + Object.keys(parsed.data.exp).length === 0) {
         showToast('To nie jest plik kopii Utarg.', { kind: 'error' });
         return;
       }
@@ -1172,6 +1399,10 @@
       Object.keys(merged.days).forEach(function (k) {
         var a = merged.days[k], b = state.data.days[k];
         if (!b || a.t !== b.t || a.a !== b.a || a.c !== b.c) changed++;
+      });
+      Object.keys(merged.exp).forEach(function (k) {
+        var a = merged.exp[k], b = state.data.exp[k];
+        if (!b || a.t !== b.t || a.a !== b.a || a.d !== b.d) changed++;
       });
       if (!changed) { showToast('Wszystkie dane z pliku już są w aplikacji.'); return; }
       confirmDialog({
@@ -1193,7 +1424,7 @@
   /* ---------- Obsługa zdarzeń ---------- */
 
   function amountPreview(input) {
-    var hint = input.id === 'ed-amount' ? $('ed-hint') : $('hint');
+    var hint = input.id === 'ed-amount' ? $('ed-hint') : (input.id === 'ex-amount' ? $('ex-hint') : $('hint'));
     if (!hint) return;
     var txt = input.value;
     if (!txt.trim()) { setHint(hint, input.id === 'ed-amount' ? '' : 'Wpisz kwotę po zamknięciu sklepu.', false); return; }
@@ -1371,6 +1602,16 @@
       case 'note-tag': toggleNoteTag(el.getAttribute('data-tag')); break;
       case 'print-month': printReport(monthReport(state.month.y, state.month.m), 'Utarg-' + state.month.y + '-' + ('0' + (state.month.m + 1)).slice(-2)); break;
       case 'print-year': printReport(yearReport(state.year), 'Utarg-' + state.year); break;
+      case 'exp-add': openExpense(null, el.getAttribute('data-key') || state.today); break;
+      case 'exp-edit': openExpense(el.getAttribute('data-id'), null); break;
+      case 'exp-save': expenseSave(); break;
+      case 'exp-delete': deleteExpense(); break;
+      case 'exp-tag': toggleExpTag(el.getAttribute('data-tag')); break;
+      case 'export-exp-csv': {
+        var ey = +el.getAttribute('data-y');
+        download('utarg-wydatki-' + ey + '.csv', '\ufeff' + C.csvExpenses(state.data, ey), 'text/csv;charset=utf-8');
+        break;
+      }
       case 'sync-connect': connect(); break;
       case 'sync-now': Store.setDirty(true); Sync.run(); break;
       case 'sync-disconnect':
@@ -1437,7 +1678,8 @@
     document.addEventListener('input', function (ev) {
       var t = ev.target;
       if (t.id === 'ed-note') { syncNoteChips(); return; }
-      if (t.id === 'amount-input' || t.id === 'ed-amount') {
+      if (t.id === 'ex-note') { syncExpChips(); return; }
+      if (t.id === 'amount-input' || t.id === 'ed-amount' || t.id === 'ex-amount') {
         if (t.id === 'amount-input') state.typing = true;
         amountPreview(t);
       }
@@ -1473,7 +1715,7 @@
       }
       if (ev.key === 'Enter' && !ev.isComposing) {
         if (t.id === 'amount-input') { ev.preventDefault(); handleAction(document.querySelector('[data-action="today-save"]'), ev); }
-        else if (t.id === 'ed-amount' || t.id === 'ed-note') { ev.preventDefault(); editorSave(); }
+        else if (t.id === 'ed-amount' || t.id === 'ed-note' || t.id === 'ex-amount' || t.id === 'ex-note') { ev.preventDefault(); editorSave(); }
         else if (t.id === 'repo-input' || t.id === 'token-input') { ev.preventDefault(); connect(); }
       }
     });

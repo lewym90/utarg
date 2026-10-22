@@ -4,7 +4,8 @@
 .report p { margin: 2px 0 0; color: #555; }
 .rp-head { display: flex; align-items: center; gap: 14px; padding-bottom: 10px; border-bottom: 2px solid #0c7a6b; margin-bottom: 12px; }
 .rp-brand { font-size: 22px; font-weight: 800; color: #0c7a6b; letter-spacing: -0.02em; }
-.rp-sum { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 12px; }
+.rp-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.rp-sub { font-size: 14px; margin: 16px 0 6px; }
 .rp-sum > div { border: 1px solid #cdd8d6; border-radius: 6px; padding: 6px 8px; }
 .rp-sum span { display: block; font-size: 10px; color: #555; }
 .rp-sum b { font-size: 13px; font-variant-numeric: tabular-nums; }

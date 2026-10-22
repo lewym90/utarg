@@ -4,7 +4,7 @@
  * Zapytania do GitHuba (inna domena) nie są przechwytywane.
  * Przy wydawaniu nowej wersji zmień VERSION.
  */
-var VERSION = 'utarg-1.1.0';
+var VERSION = 'utarg-1.2.0';
 var ASSETS = [
   './',
   'index.html',
