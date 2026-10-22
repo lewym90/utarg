@@ -9,6 +9,15 @@
       },
       "t": 1792673918453,
       "label": "iPhone"
+    },
+    {
+      "endpoint": "https://web.push.apple.com/QN9G8efD_104Df6ZWGqhloITiQmYcnKXnsW77QYsCJnZCYiH1eifJPt9MYb13TDmq58n2i3WbcfntmhTywN27FuTio4mlO21ydzqeJ6cdGTQa5pRIs3neV4hdLb7VxBAWWAAEnZL2N7txljYHi6zAQZkeZjPcxl7GYrpm1RRWrw",
+      "keys": {
+        "p256dh": "BN1Pto59R-rJerD_UQkWM2SC1BfAMKfFDEBoJfoLYNLCwatKZuqvuSu3_6tqmy0_fSnYx8SNcupFL8DZH9JeRSY",
+        "auth": "zpyyJeFbWc60mJ-N6Y73Qw"
+      },
+      "t": 1792674473771,
+      "label": "iPhone"
     }
   ]
 }
